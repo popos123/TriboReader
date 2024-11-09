@@ -575,12 +575,20 @@ def process_penetration_depth(df, data, percent=0.1, offset_raw=1, erase_peak=0,
         # DLA WYKRESÓW Z PIKIEM UJEMNYM NA POCZĄTKU (usuwanie ujemnych pików)
         # Sprawdzenie, czy pierwsza wartość w kolumnie Penetration Depth [µm] jest mniejsza od 0
         set_offset = False
-        if df.loc[0, 'Penetration Depth [µm]'] < 0:
+        # tu wywalał błąd w niektórych przypadkach:
+        # if df.loc[0, 'Penetration Depth [µm]'] < 0:
+        #     # Oblicz procent wartości ze wszystkich wierszy (10% jako default dla zmiennej percent)
+        #     limit = int(len(df) * percent)
+        #     for index in range(1, min(limit, len(df))):
+        #         if df.loc[index, 'Penetration Depth [µm]'] > 0:
+        #             df.loc[:index-1, 'Penetration Depth [µm]'] = 0 # Ustaw 0 dla wszystkich wartości ujemnych przed tą wartością dodatnią
+        #             break
+        if df.iloc[0]['Penetration Depth [µm]'] < 0:
             # Oblicz procent wartości ze wszystkich wierszy (10% jako default dla zmiennej percent)
             limit = int(len(df) * percent)
             for index in range(1, min(limit, len(df))):
-                if df.loc[index, 'Penetration Depth [µm]'] > 0:
-                    df.loc[:index-1, 'Penetration Depth [µm]'] = 0 # Ustaw 0 dla wszystkich wartości ujemnych przed tą wartością dodatnią
+                if df.iloc[index]['Penetration Depth [µm]'] > 0:
+                    df.iloc[:index, df.columns.get_loc('Penetration Depth [µm]')] = 0  # Ustaw 0 dla wszystkich wartości ujemnych przed tą wartością dodatnią
                     break
         # DLA WYKRESÓW UJEMNYCH ALE ROSNĄCYCH (cały czas albo prawie cały czas)
             else:
@@ -964,3 +972,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# TODO dodać komunikat że nie ma plików do wczytania (pusty folder)
+# TODO poprawić komunikat braku zmiennych w nazwie pliku (usunąć nawias kwadratowy i standardowe zmienne 0.1m/s i 10N)
+# TODO dodać procent przetwarzania danych
