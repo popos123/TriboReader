@@ -9,5 +9,5 @@ To run a code from .py file only You need to do a first two points from below.<b
 To compile a .py file to .exe, only You need to do a four steps:<br>
 1. Install python 3 from Microsoft Store or from https://www.python.org/downloads/<br>
 2. In the Terminal: <code>pip install pandas xlsxwriter scipy pyinstaller</code><br>
-3. Next command: <code>curl -O https://raw.githubusercontent.com/popos123/TriboReader/refs/heads/main/_TriboReader1.72.py</code><br>
-4. Final compilation: <code>pyinstaller --onefile _TriboReader1.72.py</code><br>
+3. Next command: <code>curl -O https://raw.githubusercontent.com/popos123/TriboReader/refs/heads/main/_TriboReader1.73.py</code><br>
+4. Final compilation: <code>pyinstaller --onefile _TriboReader1.73.py</code><br>
