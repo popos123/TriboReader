@@ -267,7 +267,7 @@ def read_and_process_file(file_path):
         
         # Zdefiniuj możliwe typy tribometrów i trybów
         # tribometer_types = ["Nano", "T11", "TRB3", "Rtec"]
-        tribometer_types = ["\033[38;5;214mNano\033[0m", "\033[38;5;214mT11\033[0m", "\033[38;5;214mTRB3\033[0m", "\033[38;5;214mRtec\033[0m"] # Nano, T11, TRB3, Rtec
+        tribometer_types = ["\033[38;5;214mNano\033[0m", "\033[38;5;214mT11\033[0m", "\033[38;5;214mTRB3\033[0m", "\033[38;5;214mRtec\033[0m"] # Nano NTR, T11, TRB3, Rtec
         modes = ["\033[38;5;208mLinear\033[0m", "\033[38;5;208mRotary\033[0m"] # Linear, Rotary
 
         # Znajdź linię z nagłówkiem i ustal początek danych (ich indeks)
@@ -284,7 +284,7 @@ def read_and_process_file(file_path):
                 mode = modes[1]  # "Rotary"
             # Typ
             if "Nano Tribometer" in line:
-                tribometer_type = tribometer_types[0]  # "Nano"
+                tribometer_type = tribometer_types[0]  # "Nano" (NTR)
             elif "TRB3" in line:
                 tribometer_type = tribometer_types[2]  # "TRB3"
             # Tryb i typ i index
@@ -556,7 +556,7 @@ def find_optimal_samples_average(data, column_names, min_sample, max_sample):
 # 8. Inwersja dużego peaku z początku danych i offset w górę 9. wstaw 0 na początek danych, jak nie ma.
 # df - dane uśrednione, data - dane RAW (czyste), percent - proc. danych do analizy piku, offset_raw - przyrównanie data do df, 
 # erase_peak - usuwa znaczący pik danych, invert_peak - inwersja i dodanie offsetu piku danych
-def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_peak):
+def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_peak):   
     # Sprawdź, czy kolumna istnieje i czy wszystkie wartości są równe zero, jeśli nie istnieje albo są same 0 to pomiń cały kod i zwróć DataFrame
     if 'Penetration Depth [µm]' not in df.columns or (df['Penetration Depth [µm]'] == 0).all():
         return df  # Zwróć df, jeśli kolumna nie istnieje
@@ -569,6 +569,7 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             # ^^- przesunięcie wykresu w górę o najmniejszą wartość zbioru danych
 
         # DLA WYKRESÓW CAŁYCH DODATNICH (po powyższej korekcie)
+        # TODO Należy przetestować na większej ilości danych
         # Oblicz i zastosuj offset dla najmniejszego minimum lokalnego
         local_minima = (df['Penetration Depth [µm]'].shift(1) > df['Penetration Depth [µm]']) & (df['Penetration Depth [µm]'].shift(-1) > df['Penetration Depth [µm]'])
         min_penetration_depth_2 = df['Penetration Depth [µm]'][local_minima].min()  # Znajdź najmniejsze minimum lokalne
@@ -597,12 +598,13 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
         # [oryginalne dane nie są uśredniane a początkowe wartości mogą się szybko zmieniać, więc poniższy kod to taki fix]
         if set_offset == True:
             min_penetration_depth_data_1 = data['Penetration Depth [µm]'].min()  # Oblicz minimum z całej kolumny ORYGINALNYCH danych
+            # TODO może nie minimum tylko różnica pierwszej i drugiej wartości
             if abs(min_penetration_depth_data_1) > abs(min_penetration_depth_1):
                 difference = abs(min_penetration_depth_data_1) - abs(min_penetration_depth_1)
                 df['Penetration Depth [µm]'] += abs(difference)  # Zastosuj offset, aby najmniejsza wartość była maksymalnie zero
                 set_offset = False
 
-        if erase_peak == 1: # (tylko dla wykresów powyżej lub równo z 0, czyli po korektach)
+        if erase_peak == 1 and invert_peak == 0: # (tylko dla wykresów powyżej lub równo z 0, czyli po korektach)
             # Usunięcie peaku zgodnie z zaleceniem Prof. MM
             min_value = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość w kolumnie
             end_index = df[df['Penetration Depth [µm]'] == min_value].index  # Ustal indeks najmniejszej wartości
@@ -652,6 +654,7 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             df.loc[0, 'Penetration Depth [µm]'] = 0
         else:
             # Przypisz wartościom zerowym ostatnią znaną wartość - JEŻELI JEST DUŻO ZER (0) TO PONIŻSZY KOD BĘDZIE PSUŁ WYKRES !!!
+            # TODO zmienić na: jeśli na index 1 jest 0 to aproksymuj funkcję liniową do indexu następnego który nie jest zerowy
             min_values = df['Penetration Depth [µm]'].iloc[1:].min()  # Znajdź wartości 0 od indeksu 1
             min_indexes = df[df['Penetration Depth [µm]'] == min_values].index  # Znajdź indeksy wszystkich wartości 0
             for index in min_indexes:
@@ -792,23 +795,23 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
             # Uzyskaj obiekt worksheet
             worksheet = writer.sheets[sheet_name]
             # Info na początku pliku .xlsx
-            worksheet.write(0, 0, "Poniżej znajdują się dane z tribometru sformatowane i uśrednione dynamicznie")
+            worksheet.write(0, col_offset, cleaned_filename) # nazwa bez nawiasów w pierwszej kolumnie
 
             # Jeśli są dane w nawiasie, to zapisz je
             series_name = text_in_brackets if match else filename
             # Jeśli chcesz nazwę serii z nazwy pliku w nawiasie, to ją przypisz do serii
             if series_from_filename == 1:
                 worksheet.write(1, col_offset + 2, series_name) # nazwa z zawartością nawiasów w trzeciej kolumnie
-            worksheet.write(1, col_offset, cleaned_filename) # nazwa bez nawiasów w pierwszej kolumnie
+                worksheet.write(1, col_offset + 1, series_name)
 
             # Ustal maksymalną wartość dla osi X
             x_axis_max = int(round(df['Distance [m]'].max()))
 
             # Dodaj wykres µ
-            if series_from_filename == 0: worksheet.write(1, col_offset + 2, 'µ')
+            if series_from_filename == 0: worksheet.write(1, col_offset + 1, 'µ')
             chart = writer.book.add_chart({'type': 'scatter'})
             chart.add_series({
-                'name': [sheet_name, 1, col_offset + 2],  # Nazwa serii z komórki
+                'name': [sheet_name, 1, col_offset + 1],  # Nazwa serii z komórki 'µ'
                 'categories': [sheet_name, 3, col_offset, 3 + len(df) - 1, col_offset],  # Zakres dla osi X
                 'values': [sheet_name, 3, col_offset + 1, 3 + len(df) - 1, col_offset + 1],  # Zakres dla osi Y
                 'line': {'width': 2},  # Ciągła linia bez punktów
@@ -817,11 +820,14 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
             chart.set_title({'name': f"{cleaned_filename} - µ"})
             chart.set_x_axis({
                 'name': x_axis_label,  # nazwa osi X zależna od języka
+                'min': 0,  # minimalna wartość osi X
                 'max': 100 if x_axis_max < 10 else x_axis_max,  # zakres
-                'major_unit': int(round(x_axis_max / 5.0)) if x_axis_max >= 10 else 2,  # podziałka
+                'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
                 'major_gridlines': {'visible': True},  # dodaj pionowe kreski
             })
-            chart.set_y_axis({'name': y_axis_label_mu})  # nazwa osi Y zależna od języka
+            chart.set_y_axis({
+                'name': y_axis_label_mu,  # nazwa osi Y zależna od języka
+            })
             worksheet.insert_chart(f"B{25 + row_offset}", chart)
 
             # Dodaj wykres Penetration Depth [µm] (jeśli istnieje)
@@ -829,7 +835,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                 if series_from_filename == 0: worksheet.write(1, col_offset + 2, 'P.D. [µm]')
                 chart_pd = writer.book.add_chart({'type': 'scatter'})
                 chart_pd.add_series({
-                    'name': [sheet_name, 1, col_offset + 2],  # Nazwa serii z komórki
+                    'name': [sheet_name, 1, col_offset + 2],  # Nazwa serii z komórki 'P.D. [µm]'
                     'categories': [sheet_name, 3, col_offset, 3 + len(df) - 1, col_offset],  # Zakres dla osi X
                     'values': [sheet_name, 3, col_offset + 2, 3 + len(df) - 1, col_offset + 2],  # Zakres dla osi Y
                     'line': {'width': 2},  # Ciągła linia bez punktów
@@ -838,16 +844,143 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                 chart_pd.set_title({'name': f"{cleaned_filename} - Penetration Depth [µm]"})
                 chart_pd.set_x_axis({
                     'name': x_axis_label,  # nazwa osi X zależna od języka
+                    'min': 0,  # minimalna wartość osi X
                     'max': 100 if x_axis_max < 10 else x_axis_max,  # zakres
-                    'major_unit': int(round(x_axis_max / 5.0)) if x_axis_max >= 10 else 2,  # podziałka
+                    'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
                     'major_gridlines': {'visible': True},  # dodaj pionowe kreski
                 })
-                chart_pd.set_y_axis({'name': y_axis_label_pd})  # nazwa osi Y zależna od języka
+                chart_pd.set_y_axis({
+                    'name': y_axis_label_pd,  # nazwa osi Y zależna od języka
+                })
                 worksheet.insert_chart(f"J{25 + row_offset}", chart_pd)
 
             # Dodaj pustą kolumnę jako separator
             col_offset += len(df.columns) + 1
             # Aktualizuj offset wiersza
+            row_offset += 15
+    print(f"Dane zostały zapisane do pliku {output_xlsx}")
+
+def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="default.xlsx", series_from_filename=0, chart_lang='en'):
+    # Sprawdź, czy przynajmniej jedno z csv_files lub csv_files_raw jest przekazane
+    if not csv_files and not csv_files_raw:
+        raise ValueError("At least one of 'csv_files' or 'csv_files_raw' must be provided.")
+    
+    with pd.ExcelWriter(output_xlsx, engine='xlsxwriter') as writer:
+        col_offset = 0  # Przesunięcie kolumn na dane do wykresu (współrzędne do wykresów)
+        row_offset = 0  # Przesunięcie wiersza na wykresy
+        sheet_name = output_xlsx.replace('.xlsx', "")[:31]  # Nazwa arkusza danych (limit do 31 znaków)
+
+        # Ustawienie nazw osi w zależności od języka
+        if chart_lang == 'pl':
+            x_axis_label = 'Droga [m]'
+            y_axis_label_mu = 'Współczynnik tarcia'
+            y_axis_label_pd = 'Zużycie liniowe [µm]'
+        else:  # Domyślnie angielski
+            x_axis_label = 'Distance [m]'
+            y_axis_label_mu = 'Friction coefficient'
+            y_axis_label_pd = 'Linear wear [µm]'
+
+        for csv_file, csv_file_raw in zip(csv_files, csv_files_raw):
+            # Wczytaj dane z głównego pliku CSV
+            df = pd.read_csv(csv_file)
+            # Wczytaj dane z pliku surowego CSV
+            df_raw = pd.read_csv(csv_file_raw)
+
+            # Zapisz dane z obu DataFrame do arkusza, z uwzględnieniem przesunięcia kolumn
+            df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2, startcol=col_offset)
+            df_raw.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2, startcol=col_offset + len(df.columns) + 1)
+
+            # Uzyskaj nazwę pliku i tekst w nawiasach
+            filename = os.path.basename(csv_file)
+            match = re.search(r'\((.*?)\)', filename)
+            text_in_brackets = match.group(1) if match else ""
+            cleaned_filename = filename.replace('.csv', "").replace('(', "").replace(')', "")
+
+            # Obiekt worksheet
+            worksheet = writer.sheets[sheet_name]
+            # Informacje na początku pliku .xlsx
+            worksheet.write(0, col_offset, cleaned_filename)
+
+            series_name = text_in_brackets if match else filename
+            if series_from_filename == 1:
+                if csv_files_raw: # jeżeli jest csv_files_raw
+                    worksheet.write(1, col_offset + len(df.columns) + 2, series_name + " RAW")
+                    worksheet.write(1, col_offset + len(df.columns) + 3, series_name + " RAW")
+                if csv_files: # jeżeli jest csv_files
+                    worksheet.write(1, col_offset + 1, series_name)
+                    worksheet.write(1, col_offset + 2, series_name)
+
+            # Maksymalna wartość dla osi X
+            x_axis_max = int(round(df['Distance [m]'].max()))
+
+            # Dodaj wykres µ
+            chart = writer.book.add_chart({'type': 'scatter'})
+            # Dodaj serię z danych surowych na tym samym wykresie RAW
+            if series_from_filename == 0: worksheet.write(1, col_offset + len(df.columns) + 2, 'µ RAW')
+            chart.add_series({
+                'name': [sheet_name, 1, col_offset + len(df.columns) + 2],
+                'categories': [sheet_name, 3, col_offset + len(df.columns) + 1, 3 + len(df_raw) - 1, col_offset + len(df.columns) + 1],
+                'values': [sheet_name, 3, col_offset + len(df.columns) + 2, 3 + len(df_raw) - 1, col_offset + len(df.columns) + 2],
+                'line': {'width': 2},
+                'marker': {'type': 'none'},
+            })
+            # Dodaj serię z danych przefiltrowanych na tym samym wykresie MAIN
+            if series_from_filename == 0: worksheet.write(1, col_offset + 1, 'µ')
+            chart.add_series({
+                'name': [sheet_name, 1, col_offset + 1],
+                'categories': [sheet_name, 3, col_offset, 3 + len(df) - 1, col_offset],
+                'values': [sheet_name, 3, col_offset + 1, 3 + len(df) - 1, col_offset + 1],
+                'line': {'width': 2},
+                'marker': {'type': 'none'},
+            })
+            chart.set_title({'name': f"{cleaned_filename} - µ"})
+            chart.set_x_axis({
+                'name': x_axis_label,
+                'min': 0,
+                'max': 100 if x_axis_max < 10 else x_axis_max,
+                'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
+                'major_gridlines': {'visible': True},
+            })
+            chart.set_y_axis({
+                'name': y_axis_label_mu,
+            })
+            worksheet.insert_chart(f"B{25 + row_offset}", chart)
+
+            # Dodaj wykres Penetration Depth [µm] (jeśli istnieje)
+            if 'Penetration Depth [µm]' in df.columns:
+                chart_pd = writer.book.add_chart({'type': 'scatter'})
+                # Dodaj serię z danych surowych na tym samym wykresie RAW
+                if series_from_filename == 0: worksheet.write(1, col_offset + len(df.columns) + 3, 'P.D. RAW [µm]')
+                chart_pd.add_series({
+                    'name': [sheet_name, 1, col_offset + len(df.columns) + 3],
+                    'categories': [sheet_name, 3, col_offset + len(df.columns) + 1, 3 + len(df_raw) - 1, col_offset + len(df.columns) + 1],
+                    'values': [sheet_name, 3, col_offset + len(df.columns) + 3, 3 + len(df_raw) - 1, col_offset + len(df.columns) + 3],
+                    'line': {'width': 2},
+                    'marker': {'type': 'none'},
+                })
+                # Dodaj serię z danych przefiltrowanych na tym samym wykresie MAIN
+                if series_from_filename == 0: worksheet.write(1, col_offset + 2, 'P.D. [µm]')
+                chart_pd.add_series({
+                    'name': [sheet_name, 1, col_offset + 2],
+                    'categories': [sheet_name, 3, col_offset, 3 + len(df) - 1, col_offset],
+                    'values': [sheet_name, 3, col_offset + 2, 3 + len(df) - 1, col_offset + 2],
+                    'line': {'width': 2},
+                    'marker': {'type': 'none'},
+                })
+                chart_pd.set_title({'name': f"{cleaned_filename} - Penetration Depth [µm]"})
+                chart_pd.set_x_axis({
+                    'name': x_axis_label,
+                    'min': 0,
+                    'max': 100 if x_axis_max < 10 else x_axis_max,
+                    'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
+                    'major_gridlines': {'visible': True},
+                })
+                chart_pd.set_y_axis({
+                    'name': y_axis_label_pd,
+                })
+                worksheet.insert_chart(f"J{25 + row_offset}", chart_pd)
+
+            col_offset += len(df.columns) + len(df_raw.columns) + 2
             row_offset += 15
     print(f"Dane zostały zapisane do pliku {output_xlsx}")
 
@@ -903,8 +1036,8 @@ def main():
 
                 # Zapisz wynik do pliku CSV
                 try:
-                    approximated_data.to_csv(output_file, index=False, float_format='%.3f') # finalne dane wyjściowe
-                    data.to_csv(output_file_raw, index=False, float_format='%.3f') # dane tylko wstępnie obrobione
+                    approximated_data.to_csv(output_file, index=False, float_format='%.4f') # finalne dane wyjściowe
+                    data.to_csv(output_file_raw, index=False, float_format='%.4f') # dane tylko wstępnie obrobione
                     csv_files.append(output_file)
                     csv_files_raw.append(output_file_raw)
                     print(f"[{tribometer_type}][{mode}] średnia dla µ: {best_sample_average_µ}, plik: {filename}")
@@ -913,6 +1046,13 @@ def main():
                 
     # Generowanie pliku xlsx ze wszystkimi danymi
     status = 0
+    if csv_files and csv_files_raw:
+        try:
+            generate_combined_xlsx_2(csv_files, csv_files_raw, "combined_data_all.xlsx", title_from_text, chart_lang)
+            status = 1
+        except Exception as e:
+            status = 0
+            print(f"\033[91mBłąd podczas zapisywania pliku combined_data.xlsx: {e} \033[0m")
     if csv_files:
         try:
             generate_combined_xlsx(csv_files, "combined_data.xlsx", title_from_text, chart_lang)
@@ -952,6 +1092,8 @@ def main():
             print("Wszystkie pliki raw zostały usunięte.")
     if status == 1: print("\033[92mWszystkie dane z WCZYTANYCH plików zostały zapisane poprawnie \033[0m")
     else: print("\033[91mNie wszystkie dane zostały zapisane poprawnie z powodu powyższych błędów \033[0m")
+
+    # Odliczanie do zamknięcia konsoli
     countdown = 5
     while countdown > 0:
         print(f"Okno konsoli zostanie zamknięte za {countdown} s, naciśnij ESC by anulować zamknięcie", end="\r")  # Wyświetl odliczanie w tej samej linii
@@ -967,3 +1109,4 @@ if __name__ == "__main__":
 # TODO dodać komunikat że nie ma plików do wczytania (pusty folder)
 # TODO poprawić komunikat braku zmiennych w nazwie pliku (usunąć nawias kwadratowy i standardowe zmienne 0.1m/s i 10N)
 # TODO dodać procent przetwarzania danych
+# TODO zunifikować funkcję generate_combined_xlsx i generate_combined_xlsx_2
