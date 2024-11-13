@@ -1,6 +1,6 @@
 # TriboReader
 This is a program for automation and processing of data from tribometers.<br>
-For now, supported tribometers is: Anton Paar TRB3, Nano TRB, T11, Rtec.
+For now, supported tribometers is: Anton Paar TRB3, Nano TRB (NTR), T11, Rtec.
 <hr>
 How to use:<br>
 Just put a .txt o .csv file to the folder where is a program and run it.<br>
