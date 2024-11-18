@@ -35,7 +35,7 @@ def load_config(file_name):
 
 def ask_user_for_variables():
     pd_set = 0
-    offset_raw, erase_peak, invert_peak = 1, 0, 1
+    offset_raw, erase_peak, invert_peak = 1, 0, 0
     title_from_text = 1
     default_window_length_u, default_window_length_pd = 7, 5
     min_sample, max_sample = 100, 110
@@ -179,6 +179,168 @@ def linear_mode_u_preprocessing(df):
     #     df['µ'] = shifted_data
     return df
 
+# Funkcja usuwa powtarzające się liczby więcej razy niż 10% wszystkich danych
+def replace_repeated_values(column):
+    """
+    Funkcja usuwa wartości w kolumnie, które powtarzają się więcej niż 10% 
+    wszystkich danych. Każda taka wartość jest zastępowana poprzednią "dobrą" 
+    wartością, która nie powtarza się ponad próg. Na końcu funkcja zwraca 
+    zmodyfikowaną kolumnę oraz wypisuje statystyki.
+
+    Args:
+        column (pd.Series): Kolumna danych wejściowych (np. df['µ']).
+
+    Returns:
+        pd.Series: Zmodyfikowana kolumna z zastąpionymi wartościami.
+    """
+    # Oblicz liczbę wystąpień każdej wartości
+    value_counts = column.value_counts()
+    # Oblicz próg powtórzeń (10% wszystkich danych)
+    threshold = len(column) * 0.1
+    # Znajdź wartości, które powtarzają się więcej niż 10%
+    repeated_values = value_counts[value_counts > threshold].index
+   # Jeśli nie ma wartości powtarzających się, zwróć kolumnę bez zmian
+    if len(repeated_values) == 0:
+        return column
+    # Tworzenie kopii kolumny dla przechowania zmodyfikowanych danych
+    updated_column = column.copy()
+    # Zmienna do przechowywania liczby zamian
+    replacement_count = 0
+    # Iteracja po wartościach powtarzających się
+    for value in repeated_values:
+        # Znajdź indeksy wystąpień tej wartości
+        indices = column.index[column == value]
+        for idx in indices:
+            # Znajdź poprzednią dobrą wartość w kolumnie (nie należącą do repeated_values)
+            previous_value = None
+            for prev_idx in range(idx - 1, -1, -1):  # Iteracja wstecz
+                if column.iloc[prev_idx] not in repeated_values:
+                    previous_value = column.iloc[prev_idx]
+                    break
+            # Jeśli znaleziono dobrą wartość, zastąp powtarzającą się
+            if previous_value is not None:
+                updated_column.at[idx] = previous_value
+                replacement_count += 1
+    # Wypisz wynik
+    print("Powtarzające się wartości (ponad 10% danych) i ich liczba wystąpień:")
+    for value in repeated_values:
+        print(f"Wartość: {value}, Liczba wystąpień: {value_counts[value]}")
+    print(f"Liczba zamian w sumie: {replacement_count}")
+
+    return updated_column
+
+# Srednia ucinana, usuwa wstępnie peaki
+def replace_outliers(column, max_mean_range):
+    """
+    Funkcja zastępuje wartości przekraczające średnią plus/minus max_mean_range 
+    średnią wartością danych bez tych pików. Na końcu wyświetla liczbę pików, jeśli są.
+
+    Args:
+        column (pd.Series): Kolumna danych wejściowych (np. df['µ']).
+        max_mean_range (float): Maksymalny zakres odchylenia od średniej dla wykrywania pików.
+
+    Returns:
+        pd.Series: Zmodyfikowana kolumna z zastąpionymi wartościami.
+    """
+    # Oblicz średnią wartości w kolumnie
+    mean = column.mean()
+    # Wyznacz granicę dla wykrywania pików
+    if mean >= 0:
+        max_cut_out = mean + max_mean_range
+    else:
+        max_cut_out = abs(mean) + max_mean_range
+    # Zlicz pikowe wartości
+    peak_cnt = column[(column > max_cut_out) | (column < -max_cut_out)].shape[0]
+    # Oblicz średnią bez pików
+    mean_value = column[(column <= max_cut_out) & (column >= -max_cut_out)].mean()
+    # Zastąpienie pików średnią
+    updated_column = column.apply(lambda x: mean_value if x > max_cut_out or x < -max_cut_out else x)
+    # Wyświetlenie liczby pików, jeśli są
+    if peak_cnt > 0:
+        print(f"Liczba przekroczeń średniej wartości w kolumnie '{column.name}' ({mean} + {max_mean_range}): {peak_cnt}")
+
+    return updated_column
+
+# Usuwanie peaków bazując na odchyleniu standardowym - W domyśle dla Rtec
+def remove_peaks_auto_limit(column, std_multiplier):
+    """
+    Usuwa duże peaki z podanej kolumny, automatycznie ustalając limit na podstawie średniej i odchylenia standardowego.
+    Peaki zastępowane są ostatnią dobrą wartością.
+
+    :param column: Kolumna (Series) do przetworzenia.
+    :param std_multiplier: Mnożnik odchylenia standardowego do ustalenia limitu.
+    :return: Przetworzona kolumna z usuniętymi peakami.
+    """
+    count = [0]  # Licznik wykrytych peaków
+    # Obliczanie limitów na podstawie średniej i odchylenia standardowego
+    mean = column.mean()
+    std = column.std()
+    lower_limit = mean - std_multiplier * std
+    upper_limit = mean + std_multiplier * std
+    # Zastępowanie peaków
+    def replace_peak(value, prev=[None]):
+        if prev[-1] is None:  # Inicjalizacja pierwszej wartości
+            prev[-1] = value
+        if value < lower_limit or value > upper_limit:  # Jeśli wartość jest poza limitem
+            count[0] += 1  # Zwiększ licznik
+            return prev[-1]  # Zwróć ostatnią dobrą wartość
+        prev[-1] = value  # Zaktualizuj ostatnią dobrą wartość
+        return value
+    # Przetwarzanie kolumny
+    processed_column = column.apply(replace_peak)
+    # Wyświetlenie informacji o liczbie wykrytych peaków
+    if count[0] > 0:
+        print(f"Liczba wykrytych i zastąpionych peaków w kolumnie '{column.name}': {count[0]} (limit min-max: [{lower_limit:.2f}, {upper_limit:.2f}])")
+    
+    return processed_column
+
+# Sortowanie df rosnąco
+def sort_dataframe_by_column(df, column_name):
+    """
+    Sortuje DataFrame według podanej kolumny w porządku rosnącym.
+
+    :param df: DataFrame do posortowania.
+    :param column_name: Nazwa kolumny, według której ma być posortowany DataFrame.
+    :return: Posortowany DataFrame.
+    """
+    sorted_df = df.sort_values(by=column_name).reset_index(drop=True)
+    return sorted_df
+
+def remove_out_of_range_and_file_limit(df, distance_column, file_name, limit_in):
+    """
+    Usuwa linie, w których:
+    - Wartość w kolumnie distance przekracza limit podany w nazwie pliku.
+    - Jeśli w nazwie pliku nie ma liczby, stosuje domyślny limit 1000.
+    
+    :param df: DataFrame do przetworzenia.
+    :param distance_column: Nazwa kolumny z wartościami odległości.
+    :param file_name: Nazwa pliku, z której sprawdzamy limity.
+    :return: Przetworzony DataFrame z usuniętymi błędnymi liniami.
+    """
+    # Etap 1: Poszukiwanie liczby w nazwie pliku w formacie '1000m' lub '1000M' z opcjonalnymi spacjami
+    limit_pattern = r'(\d+)\s*[mM]\b'  # Zmienione wyrażenie regularne
+    cleaned_file_name = file_name.strip()  # Usuwanie spacji wokół nazwy pliku
+    match = re.search(limit_pattern, cleaned_file_name)
+    # Ustalenie limitu - jeśli nie znaleziono liczby, ustawiamy domyślny limit 1000
+    if match:
+        limit = int(match.group(1))
+    else:
+        limit = limit_in + 1
+    # Etap 2: Sprawdzenie, czy wartość w kolumnie distance przekracza limit
+    valid_distance_mask = df[distance_column] <= limit
+    # Liczba usuniętych wierszy
+    removed_count = (~valid_distance_mask).sum()    
+    # Usunięcie błędnych wierszy
+    cleaned_df = df[valid_distance_mask].reset_index(drop=True)
+    # Informacja o liczbie usuniętych wierszy
+    if removed_count > 0:
+        if match:
+            print(f"Usunięto {removed_count} wierszy, które przekroczyły zakres odczytany z pliku {limit}m.")
+        else:
+            print(f"Usunięto {removed_count} wierszy, które przekroczyły DOMYŚLNY zkres z kodu: {limit_in}m.")
+    
+    return cleaned_df
+
 # Wczytanie dla tribometru T11 prędkości liniowej i obciążenia z nazwy pliku z danymi, obliczenie µ i Distance [m]
 def T11_calculations(df, file_name):
     s = 0.1 # Default
@@ -288,7 +450,7 @@ def read_and_process_file(file_path):
             elif "TRB3" in line:
                 tribometer_type = tribometer_types[2]  # "TRB3"
             # Tryb i typ i index
-            # Nano Tribometer
+            # Nano Tribometer (NTR)
             if "Time [s]\tDistance [m]\tlaps\tSequence ID\tCycle ID\tMax linear speed [m/s]\tNominal Load [mN]\tµ\tAngle [°]\tNormal force [mN]\tFriction force [mN]\tPenetration depth [µm]" in line:
                 mode = modes[1]  # "Rotary" - bo jest Angle [°] w headerze
                 tribometer_type = tribometer_types[0]  # "Nano" - bo jest jednostka "mN" w headerze
@@ -409,22 +571,17 @@ def read_and_process_file(file_path):
                 raise ValueError(f"\033[91m Brak funkcji programu typu: {mode}, dla tego tribometru: {tribometer_type} \033[0m")
         # Jak nie to ruch Obrotowy
         elif mode == modes[1]:  # "Rotary"
-            # Jeśli jest to Nano TRB
+            # Jeśli jest to Nano TRB (NTR)
             if tribometer_type == tribometer_types[0]:  # "Nano"
-                df['Penetration Depth [µm]'] = 0 # Set 0 to all rows in this column
+                # Set 0 to all rows in this column (just in case)
+                df['Penetration Depth [µm]'] = 0
                 # Obliczenie średniej ucinanej dla wartości bez pików
-                mean = df['µ'].mean()
-                max_mean_range = 2.0
-                if mean >= 0:
-                    max_cut_out = mean + max_mean_range # maksymalna wartość średniej ucinanej
-                else:
-                    max_cut_out = abs(mean) + max_mean_range # maksymalna wartość średniej ucinanej
-                mean_value = df.loc[(df['µ'] <= max_cut_out) & (df['µ'] >= -max_cut_out), 'µ'].mean()
-                # Zastąpienie pików średnią
-                df['µ'] = df['µ'].apply(lambda x: mean_value if x > max_cut_out or x < -max_cut_out else x)
-
+                df['µ'] = replace_outliers(df['µ'], 1.0)
+                # Usuń powtarzające się te same liczby, więcej niż 10% zbioru danych (FIX)
+                df['µ'] = replace_repeated_values(df['µ'])
                 # Wybierz interesujące kolumny
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
+
             # Jeśli to T11
             elif tribometer_type == tribometer_types[1]:  # "T11"
                 # Usunięcie błędnych odczytów
@@ -449,6 +606,7 @@ def read_and_process_file(file_path):
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
             # Jeśli to TRB3
             elif tribometer_type == tribometer_types[2]:  # "TRB3"
+
                 # Znajdź najniższą wartość w kolumnie "µ"
                 min_value = df['µ'].min()
                 # Jeśli najniższa wartość jest mniejsza od zera, zrób offset
@@ -466,27 +624,26 @@ def read_and_process_file(file_path):
                 df = df[df['DAQ.COF ()'] != 0]  # Usuń wiersze z zerowymi wartościami
                 df = pd.concat([pd.DataFrame([first_row]), df])  # Dodaj pierwszy wiersz z powrotem
 
-                # # Obliczenie średniej ucinanej dla wartości bez pików - wymaga bo Rtec ma dużo pików
-                # mean = df['DAQ.COF ()'].mean()
-                # max_mean_range = 1.1
-                # if mean >= 0:
-                #     max_cut_out = mean + max_mean_range # maksymalna wartość średniej ucinanej
-                # else:
-                #     max_cut_out = abs(mean) + max_mean_range # maksymalna wartość średniej ucinanej
-                # mean_value = df.loc[(df['DAQ.COF ()'] <= max_cut_out) & (df['DAQ.COF ()'] >= -max_cut_out), 'DAQ.COF ()'].mean()
-                # # Zastąpienie pików średnią
-                # df['DAQ.COF ()'] = df['DAQ.COF ()'].apply(lambda x: mean_value if x > max_cut_out or x < -max_cut_out else x)
-
-                # # Znajdź najniższą wartość w kolumnie "DAQ.COF ()"
-                # min_value = df['DAQ.COF ()'].min()
-                # # Jeśli najniższa wartość jest mniejsza od zera, zrób offset
-                # if min_value < 0:
-                #     df['DAQ.COF ()'] = df['DAQ.COF ()'] - min_value
+                # Obliczenie średniej ucinanej dla wartości bez pików - wymaga bo Rtec ma dużo pików --- µ ---
+                #df['DAQ.COF ()'] = replace_outliers(df['DAQ.COF ()'], 0.5)
 
                 # Zmień nazwy kolumny
                 df = df.rename(columns={'DAQ.COF ()': 'µ'})
-                # Dodanie kolumn "Distance [m]" oraz "µ" i obliczenie tych danych dla Tribometru T11
+
+                # Konwersja XYZ.Z Position (mm) na um oraz obliczenie Distance [m] z Time [s]
                 df = Rtec_calculations(df, os.path.basename(file_path))
+
+                # Sortowanie rosnąco według 'Distance [m]' (usuwa dziwne anomalie w danych)
+                df = sort_dataframe_by_column(df, 'Distance [m]')
+                
+                # usuwanie danych poza zakresem - 1000 m maksymalny zakres jak nie będzie podany w nazwie pliku
+                df = remove_out_of_range_and_file_limit(df, 'Distance [m]', os.path.basename(file_path), 1000)
+
+                # Usunięcie peaków za pomocą odchylenia standardowego razy 3 --- µ ---
+                df['µ'] = remove_peaks_auto_limit(df['µ'], std_multiplier=3)
+
+                # Usunięcie peaków za pomocą odchylenia standardowego razy 2 --- Penetration Depth [µm] ---
+                df['Penetration Depth [µm]'] = remove_peaks_auto_limit(df['Penetration Depth [µm]'], std_multiplier=2)
                 
                 # Wybierz interesujące kolumny
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
@@ -661,6 +818,13 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
                 if index > 0 and min_values == 0: # jeśli index większy od 0 i wartość minimalna równa 0
                     next_nonzero_value = df['Penetration Depth [µm]'].iloc[index + 1:].dropna().iloc[0] # wyszukaj następną wartość nie zero
                     df.loc[index, 'Penetration Depth [µm]'] = next_nonzero_value # przypisz wartość nie zero do wiersza z wartością 0
+                        # # Obliczenie średniej ucinanej dla wartości bez pików - wymaga bo Rtec ma dużo pików --- Penetration Depth [µm] ---
+        
+        # Drugi raz offset wartości ujemnych (na wszelki wypadek)
+        min_penetration_depth_4 = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość
+        if min_penetration_depth_4 < 0:  # Sprawdź, czy najmniejsza wartość jest mniejsza od 0
+            df['Penetration Depth [µm]'] += abs(min_penetration_depth_4)  # Zastosuj offset do wszystkich wartości
+            if df.loc[0, 'Penetration Depth [µm]'] != 0: df.loc[0, 'Penetration Depth [µm]'] = 0 # Ustaw jeszcze raz 0
 
         return df
 
@@ -676,8 +840,9 @@ def adjust_and_average_data(df, best_sample_average, window_u, window_pd):
 
         # Oblicz średnią dla µ i Penetration Depth [µm] (dodatkowo zabezpieczenie 1: wartość µ nie może być ujemna)
         µ_avg = subset['µ'].mean()
-        if µ_avg < 0:
-            µ_avg = abs(µ_avg)
+        # if µ_avg < 0:
+        #     µ_avg = abs(µ_avg)
+        # TODO dodać obsługę nano tribometru (NTR) - TZN. współczynnik tarcia scgodzi na ujemne wartości, jaki fix? abs? offset?
         pd_avg = subset['Penetration Depth [µm]'].mean()
 
         # Dodaj uśrednione wartości do listy
@@ -806,6 +971,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
 
             # Ustal maksymalną wartość dla osi X
             x_axis_max = int(round(df['Distance [m]'].max()))
+            x_axis_max = (int((x_axis_max + 24) / 25)) * 25
 
             # Dodaj wykres µ
             if series_from_filename == 0: worksheet.write(1, col_offset + 1, 'µ')
@@ -822,7 +988,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                 'name': x_axis_label,  # nazwa osi X zależna od języka
                 'min': 0,  # minimalna wartość osi X
                 'max': 100 if x_axis_max < 10 else x_axis_max,  # zakres
-                'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
+                'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
                 'major_gridlines': {'visible': True},  # dodaj pionowe kreski
             })
             chart.set_y_axis({
@@ -846,7 +1012,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                     'name': x_axis_label,  # nazwa osi X zależna od języka
                     'min': 0,  # minimalna wartość osi X
                     'max': 100 if x_axis_max < 10 else x_axis_max,  # zakres
-                    'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
+                    'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
                     'major_gridlines': {'visible': True},  # dodaj pionowe kreski
                 })
                 chart_pd.set_y_axis({
@@ -912,6 +1078,7 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
 
             # Maksymalna wartość dla osi X
             x_axis_max = int(round(df['Distance [m]'].max()))
+            x_axis_max = (int((x_axis_max + 24) / 25)) * 25
 
             # Dodaj wykres µ
             chart = writer.book.add_chart({'type': 'scatter'})
@@ -938,7 +1105,7 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
                 'name': x_axis_label,
                 'min': 0,
                 'max': 100 if x_axis_max < 10 else x_axis_max,
-                'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
+                'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
                 'major_gridlines': {'visible': True},
             })
             chart.set_y_axis({
@@ -972,7 +1139,7 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
                     'name': x_axis_label,
                     'min': 0,
                     'max': 100 if x_axis_max < 10 else x_axis_max,
-                    'major_unit': max(1, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
+                    'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
                     'major_gridlines': {'visible': True},
                 })
                 chart_pd.set_y_axis({
@@ -1046,13 +1213,7 @@ def main():
                 
     # Generowanie pliku xlsx ze wszystkimi danymi
     status = 0
-    if csv_files and csv_files_raw:
-        try:
-            generate_combined_xlsx_2(csv_files, csv_files_raw, "combined_data_all.xlsx", title_from_text, chart_lang)
-            status = 1
-        except Exception as e:
-            status = 0
-            print(f"\033[91mBłąd podczas zapisywania pliku combined_data.xlsx: {e} \033[0m")
+    if csv_files or csv_files_raw: print("Generowanie pliku Excelowskiego ...")
     if csv_files:
         try:
             generate_combined_xlsx(csv_files, "combined_data.xlsx", title_from_text, chart_lang)
@@ -1060,6 +1221,13 @@ def main():
         except Exception as e:
             status = 0
             print(f"\033[91mBłąd podczas zapisywania pliku combined_data.xlsx: {e} \033[0m")
+        if csv_files and csv_files_raw:
+            try:
+                generate_combined_xlsx_2(csv_files, csv_files_raw, "combined_data_all.xlsx", title_from_text, chart_lang)
+                status = 1
+            except Exception as e:
+                status = 0
+                print(f"\033[91mBłąd podczas zapisywania pliku combined_data_all.xlsx: {e} \033[0m")
         for file in csv_files:
             if os.path.exists(file):
                 os.remove(file)
