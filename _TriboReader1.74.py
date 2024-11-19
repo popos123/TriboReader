@@ -1,6 +1,7 @@
 # Moduły standardowe
 import re
 import os
+import sys
 import time
 import ctypes
 import msvcrt
@@ -1153,6 +1154,8 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
     print(f"Dane zostały zapisane do pliku {output_xlsx}")
 
 def main():
+    # Disable generation .pyc files
+    sys.dont_write_bytecode = True
     # Enable ANSI escape codes in terminal
     kernel32 = ctypes.windll.kernel32
     kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
