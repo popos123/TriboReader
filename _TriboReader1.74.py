@@ -156,18 +156,17 @@ def linear_mode_u_preprocessing(df):
         end_idx = min(len(df) - 1, idx + num_samples_after)
         filter_range = range(start_idx, end_idx + 1)
         # Ensure there are at least two elements to approximate
-        if len(filter_range) >= 2:
-            if len(filter_range) > 4:
-                first_two = df.loc[filter_range, 'µ'].iloc[:2].tolist()
-                last_two = df.loc[filter_range, 'µ'].iloc[-2:].tolist()
-                approx_values = first_two + last_two
-                df.loc[filter_range, 'µ'] = approx_values * (len(filter_range) // 4) + approx_values[:len(filter_range) % 4]
-            else:
-                # Use all available values if there are only two elements
-                df.loc[filter_range, 'µ'] = df.loc[filter_range, 'µ'].iloc[:2].tolist() * (len(filter_range) // 2) + df.loc[filter_range, 'µ'].iloc[:len(filter_range) % 2].tolist()
-    #     else:
-    #         # Wygładzenie danych 'µ'
-    #         df['µ'] = savgol_filter(df['µ'], window_length, polyorder=2)
+        if len(filter_range) > 3:
+            first_two = df.loc[filter_range, 'µ'].iloc[:2].tolist()
+            last_two = df.loc[filter_range, 'µ'].iloc[-2:].tolist()
+            approx_values = first_two + last_two
+            df.loc[filter_range, 'µ'] = approx_values * (len(filter_range) // 4) + approx_values[:len(filter_range) % 4]
+        elif len(filter_range) == 2:
+            # Use all available values if there are only two elements
+            df.loc[filter_range, 'µ'] = df.loc[filter_range, 'µ'].iloc[:2].tolist() * (len(filter_range) // 2) + df.loc[filter_range, 'µ'].iloc[:len(filter_range) % 2].tolist()
+
+    df['µ'] = abs(df['µ'])  # ABS
+
     # # Apply Savitzky-Golay filter to 'µ' column within oscillation ranges
     # filtered_data = savgol_filter(df['µ'], window_length, polyorder=2)
     # min_filtered_value = filtered_data.min()
@@ -306,11 +305,12 @@ def sort_dataframe_by_column(df, column_name):
     sorted_df = df.sort_values(by=column_name).reset_index(drop=True)
     return sorted_df
 
+# Usuwanie danych poza zakresem
 def remove_out_of_range_and_file_limit(df, distance_column, file_name, limit_in):
     """
     Usuwa linie, w których:
     - Wartość w kolumnie distance przekracza limit podany w nazwie pliku.
-    - Jeśli w nazwie pliku nie ma liczby, stosuje domyślny limit 1000.
+    - Jeśli w nazwie pliku nie ma liczby, stosuje limit ze zmiennej limit_in.
     
     :param df: DataFrame do przetworzenia.
     :param distance_column: Nazwa kolumny z wartościami odległości.
@@ -564,7 +564,8 @@ def read_and_process_file(file_path):
         if mode == modes[0]:  # "Linear"
             if tribometer_type == tribometer_types[2] or tribometer_type == tribometer_types[0]:  # "TRB3 i Nano"
                 df = linear_mode_u_preprocessing(df)
-                
+                # Usunięcie peaków za pomocą odchylenia standardowego razy 2
+                df['µ'] = remove_peaks_auto_limit(df['µ'], std_multiplier=2)
                 # Wybierz interesujące kolumny
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
             else:
