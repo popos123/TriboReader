@@ -1,4 +1,4 @@
-# Moduły standardowe
+# Importy modułów standardowych
 import re
 import os
 import sys
@@ -6,11 +6,11 @@ import time
 import ctypes
 import msvcrt
 import configparser
-# Moduły zewnętrzne
+# Importy modułów zewnętrznych
 import pandas as pd
-from scipy.signal import savgol_filter, medfilt # (medfilt zakomentowany)
+from scipy.signal import savgol_filter
 
-# aby uruchomić program należy najpierw zainstalować pythona 3.11 lub nowszego i doinstalować trzy biblioteki:
+# Aby uruchomić program należy najpierw zainstalować pythona 3.11 lub nowszego i doinstalować trzy biblioteki:
 # pip install pandas xlsxwriter scipy
 # Program wczytuje wszystkie pliki z tribometru i generuje wykresy w pliku .xlsx
 # Nazwa pliku + .txt lub .csv to nazwa wykresu
@@ -18,6 +18,7 @@ from scipy.signal import savgol_filter, medfilt # (medfilt zakomentowany)
 # Jeśli jest plik config.ini lub _config.ini to dane są wczytywane z niego najpierw
 # Dla Rtec w nazwie musi być zawarta prędkość liniowa (np. 0.1m-s), a dla T11 dodatkowo obciążenie (np. 10N)
 
+# Load config from file
 def load_config(file_name):
     config = configparser.ConfigParser()
     config.read(file_name)
@@ -34,8 +35,9 @@ def load_config(file_name):
         "chart_lang": settings.get("chart_lang", "en")
     }
 
+# Get variables from user
 def ask_user_for_variables():
-    pd_set = 0
+    pd_set = 3
     offset_raw, erase_peak, invert_peak = 1, 0, 0
     title_from_text = 1
     default_window_length_u, default_window_length_pd = 7, 5
@@ -70,117 +72,140 @@ def ask_user_for_variables():
     if pd_set == 1: erase_peak, invert_peak = 1, 0
     if pd_set == 2: erase_peak, invert_peak = 0, 1
     if pd_set == 3: erase_peak, invert_peak = 0, 0
+    print("")
     return min_sample, max_sample, default_window_length_u, default_window_length_pd, title_from_text, offset_raw, erase_peak, invert_peak, chart_lang
 
-def Savitzky(averaged_data, default_window_length_u, default_window_length_pd):
-    # Apply median filter to 'Penetration Depth [µm]'and 'µ' column within oscillation ranges
-    # Calculate the maximum allowable window length
-    max_window_length = (len(averaged_data) // 2) * 2 - 1  # Ensures it's odd
-    # Use the minimum of the default window length and the maximum allowable window length
-    window_length_u = min(default_window_length_u, max_window_length)
-    window_length_pd = min(default_window_length_pd, max_window_length)
-    # Ensure the window length is odd
-    if window_length_u % 2 == 0:
-        window_length_u += 1
-    if window_length_pd % 2 == 0:
-        window_length_pd += 1
+# Apply Savitzky–Golay filter to 'µ' and 'pd', leave intact first averaged data value
+def Savitzky(averaged_data, column_name, default_window_length):
+    """
+    Funkcja do zastosowania filtra Savitzky-Golaya na jednej kolumnie.
 
-    first_value_pd = averaged_data.at[0, 'Penetration Depth [µm]']
-    second_value_pd = averaged_data.at[1, 'Penetration Depth [µm]']
-    first_value_u = averaged_data.at[0, 'µ']
-    
-    #averaged_data['Penetration Depth [µm]'] = medfilt(df['Penetration Depth [µm]'], window_length_pd)
-    #averaged_data['µ'] = medfilt(df['µ'], window_length_u)
+    Parameters:
+    - averaged_data: DataFrame, dane wejściowe.
+    - column_name: str, nazwa kolumny do przefiltrowania.
+    - default_window_length: int, domyślna długość okna dla filtra.
 
-    averaged_data['Penetration Depth [µm]'] = savgol_filter(averaged_data['Penetration Depth [µm]'], window_length_pd, polyorder=2)
-    averaged_data['µ'] = savgol_filter(averaged_data['µ'], window_length_u, polyorder=2)
-    
-    averaged_data.at[0, 'Penetration Depth [µm]'] = first_value_pd
-    averaged_data.at[1, 'Penetration Depth [µm]'] = second_value_pd
-    averaged_data.at[0, 'µ'] = first_value_u
+    Returns:
+    - DataFrame z zastosowanym filtrem dla wskazanej kolumny.
+    """
+    if column_name not in averaged_data:
+        raise ValueError(f"[ERROR] Kolumna '{column_name}' nie istnieje w danych.")
+    # Oblicz maksymalną dopuszczalną długość okna
+    max_window_length = (len(averaged_data) // 2) * 2 - 1  # Upewnij się, że jest nieparzysta
+    # Użyj minimalnej z podanej i maksymalnej długości
+    window_length = min(default_window_length, max_window_length)
+    # Upewnij się, że długość okna jest nieparzysta
+    if window_length % 2 == 0:
+        window_length += 1
+    # Zachowaj pierwszą wartość kolumny
+    first_value = averaged_data.at[0, column_name]
+    # Zastosuj filtr
+    averaged_data[column_name] = savgol_filter(averaged_data[column_name], window_length, polyorder=2)
+    # Przywróć pierwszą wartość
+    averaged_data.at[0, column_name] = first_value
 
     return averaged_data
 
-# Funkcja konwertuje przebieg Penetration Depth [µm] z pseudo sinusoidalnego / prostokątnego na liniowy dodatni
+# Funkcja konwertuje przebieg 'µ' z pseudo-sinusoidalnego / prostokątnego na liniowy
+# Za pomocą 'Linear Position [mm]' wyznacza odcinki ruchu posuwisto-zwrotnego (linear) [opcjonalnie]
+# Tam gdzie była zmiana kierunku zmienia znak i usuwa próbki gdzie ruch ustał lub rósł dopiero
+# Po usunięciu aproksymuje te próbki bazując na średniej z dwóch danych przed i po usunięciu
 def linear_mode_u_preprocessing(df):
-    linear_positions = df['Linear Position [mm]']
-    sign_changes_linear = (linear_positions.shift() * linear_positions < 0).cumsum()
-    # Initialize sign_changes_µ and other necessary variables
-    sign_changes_µ = pd.Series(index=df.index)
-    last_sign_change_index = None
-    max_forward_limit = 10
-    for idx in df.index:
-        if sign_changes_linear[idx] != last_sign_change_index:
-            last_sign_change_index = sign_changes_linear[idx]
-            sign_change_count = 0
-        if (linear_positions.shift()[idx] * df['µ'][idx] < 0) or (sign_change_count < max_forward_limit):
-            sign_change_count += 1
+    # Ustawienia
+    default_sampling_percent = 0.004  # Domyślnie 0.4% próbek
+    max_rows_to_cut = 0  # Suma wierszy wyciętych
+    # Sprawdzenie obecności kolumny 'Linear Position [mm]'
+    support_column = 'Linear Position [mm]'
+    # String START
+    lm_warning = "UWAGA! Za mało próbek do ładnego wygładzenia - tylko ABS(), za szybko? za mały promień? za krótko?"
+    lm_count = "Ilość zmian znaku:"
+    lm_cut = "Liczba wyciętych próbek:"
+    lm_per_sample = "próbek na zmianę znaku:"
+    # String END
+    if support_column in df.columns:
+        linear_positions = df[support_column]
+        changes_linear = (linear_positions.shift() * linear_positions < 0).cumsum()
+        # Zabezpieczenie fluktuacji i obliczanie przesunięcia w 'µ'
+        changes_µ = []
+        for idx in df.index:
+            if idx == 0:
+                continue
+            if linear_positions.shift()[idx] * linear_positions[idx] < 0:
+                # Synchronizacja zmiany znaku w 'µ'
+                sign_change_found = False
+                rows_after_linear_change = 0
+                for i in range(idx, len(df)):
+                    if df['µ'].shift()[i] * df['µ'][i] < 0:
+                        sign_change_found = True
+                        rows_after_linear_change = i - idx
+                        break
+                if sign_change_found:
+                    changes_µ.append((idx, rows_after_linear_change))
+        if (round(len(df)/len(changes_µ)) < 3) or (round(len(df)/changes_linear.iloc[-1]) < 3):
+            df['µ'] = df['µ'].abs() # ABS wartości w kolumnie 'µ'
+            print(lm_warning)
         else:
-            sign_change_count = max_forward_limit 
-        sign_changes_µ[idx] = sign_change_count
-    # Group by 'sign_changes_linear'
-    df['sign_changes_linear'] = sign_changes_linear
-    # Initialize the resulting column
-    df['shifted_µ'] = 0.0  # Set float type for the shifted_µ column
-    # Group by 'sign_changes_linear' and calculate the shift
-    groups = df.groupby('sign_changes_linear')
-    for name, group in groups:
-        if name == 0:
-            df.loc[group.index, 'shifted_µ'] = group['µ']
+            # Wycinanie danych na podstawie obliczonego przesunięcia
+            for change_idx, delay in changes_µ:
+                cut_range = delay # Zakres wycięcia w obie strony
+                start_idx = max(0, change_idx - cut_range)
+                end_idx = min(len(df) - 1, change_idx + cut_range)
+                df.loc[start_idx:end_idx, 'µ'] = None
+                max_rows_to_cut += (end_idx - start_idx + 1)
+            # Upewnij się, że w zerowej linii 'µ' jest wartość 0
+            if df.loc[0, 'µ'] != 0:
+                # Przesuń wartości w kolumnie 'µ' w dół o 1
+                df['µ'] = df['µ'].shift(1)
+                # Dodaj nową wartość 0 na początek kolumny 'µ'
+                df.loc[0, 'µ'] = 0
+    else:
+        # Brak 'Linear Position [mm]' - obliczanie zmian znaku w 'µ'
+        changes_µ = changes_linear = (df['µ'].shift() * df['µ'] < 0).cumsum()
+        if (round(len(df)/changes_µ.iloc[-1]) < 3):
+            df['µ'] = df['µ'].abs() # ABS wartości w kolumnie 'µ'
+            print(lm_warning)
         else:
-            prev_value = group['µ'].iloc[0]
-            median_sign = -1 if prev_value < 0 else 1
-            df.loc[group.index, 'shifted_µ'] = group['µ'] * median_sign
-    # Remove the 'µ' column and rename 'shifted_µ' to 'µ'
-    df.drop(columns=['µ'], inplace=True)
-    df.rename(columns={'shifted_µ': 'µ'}, inplace=True)
-    # # Calculate the required number of samples for filtering
-    # # Determine the default window length
-    # default_window_length = 7
-    # # Calculate the maximum allowable window length
-    # max_window_length = (len(df) // 2) * 2 - 1  # Ensures it's odd
-    # # Use the minimum of the default window length and the maximum allowable window length
-    # window_length = min(default_window_length, max_window_length)
-    # # Ensure the window length is odd
-    # if window_length % 2 == 0:
-    #     window_length += 1
-    sampling_percent = 0.12  # 12%
-    # Identify the indices where sign_changes_linear changes
-    change_indices = pd.Series(sign_changes_linear).diff().ne(0).cumsum() - 1
-    change_indices = change_indices[change_indices != -1].index.tolist()
-    # Calculate the required number of samples for filtering
-    num_samples_before = int((len(df) / len(change_indices)) * sampling_percent)
-    num_samples_after = int((len(df) / len(change_indices)) * sampling_percent * 1.5)
-    # Apply approximation within the specified ranges based on sign_changes_linear changes
-    for idx in change_indices:
-        start_idx = max(0, idx - num_samples_before)
-        end_idx = min(len(df) - 1, idx + num_samples_after)
-        filter_range = range(start_idx, end_idx + 1)
-        # Ensure there are at least two elements to approximate
-        if len(filter_range) > 3:
-            first_two = df.loc[filter_range, 'µ'].iloc[:2].tolist()
-            last_two = df.loc[filter_range, 'µ'].iloc[-2:].tolist()
-            approx_values = first_two + last_two
-            df.loc[filter_range, 'µ'] = approx_values * (len(filter_range) // 4) + approx_values[:len(filter_range) % 4]
-        elif len(filter_range) == 2:
-            # Use all available values if there are only two elements
-            df.loc[filter_range, 'µ'] = df.loc[filter_range, 'µ'].iloc[:2].tolist() * (len(filter_range) // 2) + df.loc[filter_range, 'µ'].iloc[:len(filter_range) % 2].tolist()
+            # Wycinanie danych wokół zmian znaku
+            for change_idx in changes_µ.index[df['µ'].shift() * df['µ'] < 0]:
+                num_samples = int(len(df) * default_sampling_percent)
+                start_idx = max(0, change_idx - num_samples)
+                end_idx = min(len(df) - 1, change_idx + num_samples)
+                df.loc[start_idx:end_idx, 'µ'] = None
+                max_rows_to_cut += (end_idx - start_idx + 1)
+    if not ((round(len(df) / changes_linear.iloc[-1]) < 3) if support_column in df.columns else (round(len(df) / changes_µ.iloc[-1]) < 3)):
+        # ABS wartości w kolumnie 'µ'
+        df['µ'] = df['µ'].abs()
+        # Aproksymacja liniowa z użyciem średnich próbek przed i po
+        for idx, row in df.iterrows():
+            if pd.isna(row['µ']):
+                # Znajdź przedział do aproksymacji
+                prev_idx = df.loc[:idx - 1, 'µ'].last_valid_index()
+                next_idx = df.loc[idx + 1:, 'µ'].first_valid_index()
+                if prev_idx is not None and next_idx is not None:
+                    # Oblicz wartości średnie przed i po wycięciu
+                    pre_values = df.loc[max(0, prev_idx - 1):prev_idx, 'µ'].mean()
+                    post_values = df.loc[next_idx:min(next_idx + 1, len(df) - 1), 'µ'].mean()
+                    # Aproksymacja liniowa na podstawie średnich wartości
+                    num_points = next_idx - prev_idx
+                    df.loc[prev_idx:next_idx, 'µ'] = pd.Series(
+                        [pre_values + (post_values - pre_values) * (i / num_points)
+                        for i in range(num_points + 1)],
+                        index=range(prev_idx, next_idx + 1)
+                    )
+    if max_rows_to_cut > 0:
+        if support_column in df.columns:
+            print(f"{lm_count} {len(changes_µ)}, {changes_linear.iloc[-1]}")
+            if (round(len(df)/len(changes_µ)) > 3):
+                print(f"{lm_cut} {max_rows_to_cut}, {lm_per_sample} {round(max_rows_to_cut/len(changes_µ))}")
+        else:
+            print(f"{lm_count} {changes_µ.iloc[-1]}")
+            if (round(len(df)/changes_µ.iloc[-1]) > 3):
+                print(f"{lm_cut} {max_rows_to_cut}, {lm_per_sample} {round(max_rows_to_cut/changes_µ.iloc[-1])}")
 
-    df['µ'] = abs(df['µ'])  # ABS
-
-    # # Apply Savitzky-Golay filter to 'µ' column within oscillation ranges
-    # filtered_data = savgol_filter(df['µ'], window_length, polyorder=2)
-    # min_filtered_value = filtered_data.min()
-    # if min_filtered_value <= 0:
-    #     df['µ'] = abs(filtered_data)
-    # else:
-    #     # Shift the filtered data upwards so that the minimum value is zero or greater
-    #     shifted_data = filtered_data + abs(min_filtered_value)
-    #     df['µ'] = shifted_data
     return df
 
 # Funkcja usuwa powtarzające się liczby więcej razy niż 10% wszystkich danych
-def replace_repeated_values(column):
+def replace_repeated_values(column, percent=0.1):
     """
     Funkcja usuwa wartości w kolumnie, które powtarzają się więcej niż 10% 
     wszystkich danych. Każda taka wartość jest zastępowana poprzednią "dobrą" 
@@ -189,6 +214,7 @@ def replace_repeated_values(column):
 
     Args:
         column (pd.Series): Kolumna danych wejściowych (np. df['µ']).
+        percent (float): procent powtarzania, default 0.1, od 0 do 1.
 
     Returns:
         pd.Series: Zmodyfikowana kolumna z zastąpionymi wartościami.
@@ -196,7 +222,7 @@ def replace_repeated_values(column):
     # Oblicz liczbę wystąpień każdej wartości
     value_counts = column.value_counts()
     # Oblicz próg powtórzeń (10% wszystkich danych)
-    threshold = len(column) * 0.1
+    threshold = len(column) * percent
     # Znajdź wartości, które powtarzają się więcej niż 10%
     repeated_values = value_counts[value_counts > threshold].index
    # Jeśli nie ma wartości powtarzających się, zwróć kolumnę bez zmian
@@ -221,11 +247,10 @@ def replace_repeated_values(column):
             if previous_value is not None:
                 updated_column.at[idx] = previous_value
                 replacement_count += 1
-    # Wypisz wynik
-    print("Powtarzające się wartości (ponad 10% danych) i ich liczba wystąpień:")
+
     for value in repeated_values:
         print(f"Wartość: {value}, Liczba wystąpień: {value_counts[value]}")
-    print(f"Liczba zamian w sumie: {replacement_count}")
+    print(f"UWAGA! Liczba zastąpionych, powtarzających się wartości: {replacement_count}")
 
     return updated_column
 
@@ -290,7 +315,7 @@ def remove_peaks_auto_limit(column, std_multiplier):
     processed_column = column.apply(replace_peak)
     # Wyświetlenie informacji o liczbie wykrytych peaków
     if count[0] > 0:
-        print(f"Liczba wykrytych i zastąpionych peaków w kolumnie '{column.name}': {count[0]} (limit min-max: [{lower_limit:.2f}, {upper_limit:.2f}])")
+        print(f"Wykryte i zastąpione peaki w kolumnie '{column.name}': {count[0]} (limit min-max: [{lower_limit:.2f}, {upper_limit:.2f}])")
     
     return processed_column
 
@@ -341,6 +366,37 @@ def remove_out_of_range_and_file_limit(df, distance_column, file_name, limit_in)
             print(f"Usunięto {removed_count} wierszy, które przekroczyły DOMYŚLNY zkres z kodu: {limit_in}m.")
     
     return cleaned_df
+
+# Offset uniwersalny, jeśli jest wartość df poniżej 0
+def adjust_negative_offset(df, column):
+    """
+    Funkcja sprawdza, czy najniższa wartość w danej kolumnie jest mniejsza od zera.
+    Jeśli tak, przesuwa wszystkie wartości o wartość offsetu i drukuje informację.
+    
+    Args:
+        df (pd.DataFrame): DataFrame zawierający dane.
+        column (str): Nazwa kolumny do sprawdzenia.
+    
+    Returns:
+        pd.DataFrame: DataFrame z poprawionymi wartościami.
+    """
+    # Sprawdź, czy kolumna istnieje w DataFrame
+    if column in df.columns:
+        # Znajdź najniższą wartość w kolumnie
+        min_value = df[column].min()
+        # Jeśli najniższa wartość jest mniejsza od zera, zrób offset
+        if min_value < 0:
+            print(f"UWAGA! Najniższa wartość w kolumnie '{column}' to {min_value:.4f}. Wykonano ABS().")
+            # Znajdź indeks(y) najmniejszej wartości
+            min_index = df[df[column] == min_value].index
+            # Zmień wartość na jej wartość bezwzględną
+            df.loc[min_index, column] = abs(min_value) # abs tylko jednaj wartosci
+            #df[column] = df[column] - min_value # offset wszystko o najmniejsza wartosc
+            # TODO Poprawić funkcję, inny pomysł ...
+    else:
+        print(f"Kolumna '{column}' nie istnieje w DataFrame.")
+    
+    return df
 
 # Wczytanie dla tribometru T11 prędkości liniowej i obciążenia z nazwy pliku z danymi, obliczenie µ i Distance [m]
 def T11_calculations(df, file_name):
@@ -564,6 +620,15 @@ def read_and_process_file(file_path):
         # Sprawdź, czy plik zawiera kolumnę "Linear Position [mm]" jak tak to ruch Posuwisto-Zwrotny
         if mode == modes[0]:  # "Linear"
             if tribometer_type == tribometer_types[2] or tribometer_type == tribometer_types[0]:  # "TRB3 i Nano"
+                if tribometer_type == tribometer_types[0]:  # "Nano" (NTR) - JUST IN CASE
+                    # Set 0 to all rows in this column (just in case)
+                    df['Penetration Depth [µm]'] = 0
+                    # Obliczenie średniej ucinanej dla wartości bez pików
+                    df['µ'] = replace_outliers(df['µ'], 1.0)
+
+                # Usuń powtarzające się te same liczby, więcej niż 10% zbioru danych (FIX)
+                df['µ'] = replace_repeated_values(df['µ'])
+                # Konwersja przebiegu 'µ' z pseudo-sinusoidalnego / prostokątnego na liniowy
                 df = linear_mode_u_preprocessing(df)
                 # Usunięcie peaków za pomocą odchylenia standardowego razy 2
                 df['µ'] = remove_peaks_auto_limit(df['µ'], std_multiplier=2)
@@ -586,18 +651,11 @@ def read_and_process_file(file_path):
 
             # Jeśli to T11
             elif tribometer_type == tribometer_types[1]:  # "T11"
-                # Usunięcie błędnych odczytów
-                # Zachowaj pierwszą wartość i usuń pozostałe wiersze gdzie Friction force = 0
-                first_row = df.iloc[0]
-                df = df.iloc[1:]  # Usuń pierwszy wiersz
-                df = df[df['Friction force [N]'] != 0]  # Usuń wiersze z zerowymi wartościami
-                df = pd.concat([pd.DataFrame([first_row]), df])  # Dodaj pierwszy wiersz z powrotem
+                # Usuń powtarzające się te same liczby, więcej niż 5% zbioru danych (FIX)
+                df['Friction force [N]'] = replace_repeated_values(df['Friction force [N]'], 0.05)
 
-                # Znajdź najniższą wartość w kolumnie "Friction force [N]"
-                min_value = df['Friction force [N]'].min()
-                # Jeśli najniższa wartość jest mniejsza od zera, zrób offset
-                if min_value < 0:
-                    df['Friction force [N]'] = df['Friction force [N]'] - min_value
+                # # Znajdź najniższą wartość w kolumnie "Friction force [N]"
+                #df = adjust_negative_offset(df, 'Friction force [N]')
 
                 # Zmień nazwy kolumny
                 df = df.rename(columns={'Displacement [um]': 'Penetration Depth [µm]'})
@@ -609,22 +667,15 @@ def read_and_process_file(file_path):
             # Jeśli to TRB3
             elif tribometer_type == tribometer_types[2]:  # "TRB3"
 
-                # Znajdź najniższą wartość w kolumnie "µ"
-                min_value = df['µ'].min()
-                # Jeśli najniższa wartość jest mniejsza od zera, zrób offset
-                if min_value < 0:
-                    df['µ'] = df['µ'] - min_value
+                # # Znajdź najniższą wartość w kolumnie "µ"
+                #df = adjust_negative_offset(df, 'µ')
 
                 # Wybierz interesujące kolumny
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
             # Jeśli to Rtec
             elif tribometer_type == tribometer_types[3]:  # "Rtec"
-                # Usunięcie błędnych odczytów
-                # Zachowaj pierwszą wartość i usuń pozostałe wiersze gdzie DAQ.COF () = 0
-                first_row = df.iloc[0]
-                df = df.iloc[1:]  # Usuń pierwszy wiersz
-                df = df[df['DAQ.COF ()'] != 0]  # Usuń wiersze z zerowymi wartościami
-                df = pd.concat([pd.DataFrame([first_row]), df])  # Dodaj pierwszy wiersz z powrotem
+                # Usuń powtarzające się te same liczby, więcej niż 5% zbioru danych (FIX)
+                df['DAQ.COF ()'] = replace_repeated_values(df['DAQ.COF ()'], 0.05)
 
                 # Obliczenie średniej ucinanej dla wartości bez pików - wymaga bo Rtec ma dużo pików --- µ ---
                 #df['DAQ.COF ()'] = replace_outliers(df['DAQ.COF ()'], 0.5)
@@ -646,7 +697,7 @@ def read_and_process_file(file_path):
 
                 # Usunięcie peaków za pomocą odchylenia standardowego razy 2 --- Penetration Depth [µm] ---
                 df['Penetration Depth [µm]'] = remove_peaks_auto_limit(df['Penetration Depth [µm]'], std_multiplier=2)
-                
+
                 # Wybierz interesujące kolumny
                 df = df[['Distance [m]', 'µ', 'Penetration Depth [µm]']]
             else:
@@ -728,7 +779,6 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             # ^^- przesunięcie wykresu w górę o najmniejszą wartość zbioru danych
 
         # DLA WYKRESÓW CAŁYCH DODATNICH (po powyższej korekcie)
-        # TODO Należy przetestować na większej ilości danych
         # Oblicz i zastosuj offset dla najmniejszego minimum lokalnego
         local_minima = (df['Penetration Depth [µm]'].shift(1) > df['Penetration Depth [µm]']) & (df['Penetration Depth [µm]'].shift(-1) > df['Penetration Depth [µm]'])
         min_penetration_depth_2 = df['Penetration Depth [µm]'][local_minima].min()  # Znajdź najmniejsze minimum lokalne
@@ -744,7 +794,10 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             limit = int(len(df) * percent)
             for index in range(1, min(limit, len(df))):
                 if df.iloc[index]['Penetration Depth [µm]'] > 0:
+                    indices_to_zero = list(range(1, index + 1))  # Indeksy human-readable
                     df.iloc[:index, df.columns.get_loc('Penetration Depth [µm]')] = 0  # Ustaw 0 dla wszystkich wartości ujemnych przed tą wartością dodatnią
+                    print(f"Usunięto początkowy pik danych 'pd', od {indices_to_zero[0]} do {indices_to_zero[-1]}")
+                    if erase_peak == 0 and indices_to_zero[-1] > 1: print(f"UWAGA! Usunięto część danych 'pd', dane błędne??? Porównaj z RAW")
                     break
         # DLA WYKRESÓW UJEMNYCH ALE ROSNĄCYCH (cały czas albo prawie cały czas)
             else:
@@ -756,11 +809,21 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
         # Dodatkowy offset wykresów rosnących (operacje już na wartościach dodatnich)
         # [oryginalne dane nie są uśredniane a początkowe wartości mogą się szybko zmieniać, więc poniższy kod to taki fix]
         if set_offset == True:
-            min_penetration_depth_data_1 = data['Penetration Depth [µm]'].min()  # Oblicz minimum z całej kolumny ORYGINALNYCH danych
-            # TODO może nie minimum tylko różnica pierwszej i drugiej wartości
-            if abs(min_penetration_depth_data_1) > abs(min_penetration_depth_1):
-                difference = abs(min_penetration_depth_data_1) - abs(min_penetration_depth_1)
-                df['Penetration Depth [µm]'] += abs(difference)  # Zastosuj offset, aby najmniejsza wartość była maksymalnie zero
+            # Znajdź minimum w kolumnie
+            min_value = df['Penetration Depth [µm]'].min()
+            min_index = df['Penetration Depth [µm]'].idxmin()
+            # Sprawdź pozycję minimum
+            if min_index in [0, 1]:
+                # Jeśli minimum jest na początku, użyj różnicy pierwszych dwóch wartości
+                difference = abs(df['Penetration Depth [µm]'].iloc[1] - df['Penetration Depth [µm]'].iloc[0])
+                df['Penetration Depth [µm]'] += abs(difference)  # Zastosuj offset
+                print(f"Zastosowano dodatkowy offset {abs(difference):.1f} bazujący na różnicy pierwszych dwóch wartości.")
+                set_offset = False
+            elif min_index in [len(df) - 2, len(df) - 1]:
+                # Jeśli minimum jest na końcu, użyj różnicy ostatnich dwóch wartości
+                difference = abs(df['Penetration Depth [µm]'].iloc[-1] - df['Penetration Depth [µm]'].iloc[-2])
+                df['Penetration Depth [µm]'] += abs(difference)  # Zastosuj offset
+                print(f"Zastosowano dodatkowy offset {abs(difference):.1f} bazujący na różnicy ostatnich dwóch wartości.")
                 set_offset = False
 
         if erase_peak == 1 and invert_peak == 0: # (tylko dla wykresów powyżej lub równo z 0, czyli po korektach)
@@ -791,6 +854,12 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
                 else:
                     consecutive_zero_min_index = 0  # Zresetuj licznik, jeśli min_index nie jest równy 0
 
+        # Drugi raz offset wartości ujemnych (na wszelki wypadek) względem danych uśrednionych
+        min_penetration_depth_4 = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość
+        if min_penetration_depth_4 < 0:  # Sprawdź, czy najmniejsza wartość jest mniejsza od 0
+            df['Penetration Depth [µm]'] += abs(min_penetration_depth_4)  # Zastosuj offset do wszystkich wartości
+            if df.loc[0, 'Penetration Depth [µm]'] != 0: df.loc[0, 'Penetration Depth [µm]'] = 0 # Ustaw jeszcze raz 0
+
         if offset_raw == 1:
             # Offset danych RAW aby przyrównać z danymi uśrednionymi
             middle_index_df = len(df) // 2
@@ -804,7 +873,7 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             if df['Penetration Depth [µm]'].iloc[middle_index_df] != average_penetration_depth:
                 difference = average_penetration_depth - df['Penetration Depth [µm]'].iloc[middle_index_df]
                 data['Penetration Depth [µm]'] += -difference  # Dodaj offset danych w Penetration Depth [µm]
-        
+
         # Upewnij się, że w zerowej linii "Penetration Depth [µm]" jest wartość 0
         if df.loc[0, 'Penetration Depth [µm]'] != 0:
             # Przesuń wartości w kolumnie 'Penetration Depth [µm]' w dół o 1
@@ -812,22 +881,23 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             # Dodaj nową wartość 0 na początek kolumny 'Penetration Depth [µm]'
             df.loc[0, 'Penetration Depth [µm]'] = 0
         else:
-            # Przypisz wartościom zerowym ostatnią znaną wartość - JEŻELI JEST DUŻO ZER (0) TO PONIŻSZY KOD BĘDZIE PSUŁ WYKRES !!!
-            # TODO zmienić na: jeśli na index 1 jest 0 to aproksymuj funkcję liniową do indexu następnego który nie jest zerowy
+            # Przypisz wartościom zerowym ostatnią znaną wartość powyżej zera
+            # Znalezienie wartości 0 od indeksu 1 w kolumnie
             min_values = df['Penetration Depth [µm]'].iloc[1:].min()  # Znajdź wartości 0 od indeksu 1
             min_indexes = df[df['Penetration Depth [µm]'] == min_values].index  # Znajdź indeksy wszystkich wartości 0
             for index in min_indexes:
-                if index > 0 and min_values == 0: # jeśli index większy od 0 i wartość minimalna równa 0
-                    next_nonzero_value = df['Penetration Depth [µm]'].iloc[index + 1:].dropna().iloc[0] # wyszukaj następną wartość nie zero
-                    df.loc[index, 'Penetration Depth [µm]'] = next_nonzero_value # przypisz wartość nie zero do wiersza z wartością 0
-                        # # Obliczenie średniej ucinanej dla wartości bez pików - wymaga bo Rtec ma dużo pików --- Penetration Depth [µm] ---
+                if index > 0 and min_values == 0:  # Jeśli indeks większy od 0 i wartość minimalna równa 0
+                    # Znajdź następną wartość różną od 0
+                    next_nonzero_idx = df['Penetration Depth [µm]'].iloc[index + 1:].ne(0).idxmax()  # Indeks następnej wartości != 0
+                    if next_nonzero_idx > index:  # Jeśli istnieje następna wartość różna od 0
+                        prev_value = df['Penetration Depth [µm]'].iloc[index - 1]  # Wartość poprzednia
+                        next_value = df['Penetration Depth [µm]'].iloc[next_nonzero_idx]  # Wartość następna
+                        # Aproksymacja liniowa
+                        interpolated_value = prev_value + (next_value - prev_value) / (next_nonzero_idx - index)
+                        df.loc[index, 'Penetration Depth [µm]'] = interpolated_value  # Przypisanie aproksymowanej wartości
+                        print(f"Zinterpolowano wartość 'pd' dla indeksu {index + 1}: {interpolated_value:.1f}")  # Drukuj indeks human-readable
+            if erase_peak == 1 and min_indexes > 0: print("UWAGA! Usunięto zera po piku w 'pd', według configu użytkownika programu.") # Drukuj info
         
-        # Drugi raz offset wartości ujemnych (na wszelki wypadek)
-        min_penetration_depth_4 = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość
-        if min_penetration_depth_4 < 0:  # Sprawdź, czy najmniejsza wartość jest mniejsza od 0
-            df['Penetration Depth [µm]'] += abs(min_penetration_depth_4)  # Zastosuj offset do wszystkich wartości
-            if df.loc[0, 'Penetration Depth [µm]'] != 0: df.loc[0, 'Penetration Depth [µm]'] = 0 # Ustaw jeszcze raz 0
-
         return df
 
 # Funkcja uśrednia RAW Data według zmiennej best_sample_average i stasuje filtr Savitzky-Golay
@@ -857,8 +927,11 @@ def adjust_and_average_data(df, best_sample_average, window_u, window_pd):
     # Stwórz DataFrame z uśrednionymi danymi
     averaged_data = pd.DataFrame(averaged_data_list)
 
-    # Druga filtracja
-    averaged_data = Savitzky(averaged_data, window_u, window_pd)
+    # Filtrowanie kolumny 'µ' z długością okna 'window_u'
+    averaged_data = Savitzky(averaged_data, 'µ', window_u)
+
+    # Filtrowanie kolumny 'Penetration Depth [µm]' z długością okna 'window_pd'
+    averaged_data = Savitzky(averaged_data, 'Penetration Depth [µm]', window_pd)
     
     # Upewnij się, że w zerowej linii "µ" jest wartość 0
     if averaged_data.loc[0, 'µ'] != 0:
@@ -1192,7 +1265,7 @@ def main():
                 averaged_data = adjust_and_average_data(data, best_sample_average_µ, default_window_length_u, default_window_length_pd)
                 
                 # Korekta zużycia liniowego
-                averaged_data = process_penetration_depth(averaged_data, data, 0.1, offset_raw, erase_peak, invert_peak) # df=averaged_data, data=data, percent=0.1, offset_raw=0, erase_peak=0, invert_peak=1
+                averaged_data = process_penetration_depth(averaged_data, data, 0.05, offset_raw, erase_peak, invert_peak) # df=averaged_data, data=data, percent=0.1, offset_raw=0, erase_peak=0, invert_peak=1
 
                 # Approximate the last value
                 approximated_data = approximate_last_measurement(averaged_data, data)
@@ -1211,7 +1284,7 @@ def main():
                     data.to_csv(output_file_raw, index=False, float_format='%.4f') # dane tylko wstępnie obrobione
                     csv_files.append(output_file)
                     csv_files_raw.append(output_file_raw)
-                    print(f"[{tribometer_type}][{mode}] średnia dla µ: {best_sample_average_µ}, plik: {filename}")
+                    print(f"[{tribometer_type}][{mode}] średnia dla µ: {best_sample_average_µ}, plik: {filename}\n")
                 except Exception as e:
                     print(f"\033[91mBłąd podczas zapisywania pliku {output_file}: {e} \033[0m")
                 
