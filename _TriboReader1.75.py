@@ -106,6 +106,21 @@ def Savitzky(averaged_data, column_name, default_window_length):
 
     return averaged_data
 
+# Funkcja oblicza Srednią dla danej kolumny danych
+def display_average(df, column_name):
+    """
+    Funkcja oblicza i wyświetla średnią wartość z podanej kolumny DataFrame.
+
+    :param df: DataFrame, z którego będą brane dane
+    :param nazwa_kolumny: Nazwa kolumny, z której ma być obliczana średnia
+    """
+    if column_name in df.columns:
+        column_mean = df[column_name].mean()
+        return column_mean
+    else:
+        print(f"Kolumna '{column_name}' nie istnieje w DataFrame.")
+        return 0
+
 # Funkcja konwertuje przebieg 'µ' z pseudo-sinusoidalnego / prostokątnego na liniowy
 # Za pomocą 'Linear Position [mm]' wyznacza odcinki ruchu posuwisto-zwrotnego (linear) [opcjonalnie]
 # Tam gdzie była zmiana kierunku zmienia znak i usuwa próbki gdzie ruch ustał lub rósł dopiero
@@ -1284,7 +1299,8 @@ def main():
                     data.to_csv(output_file_raw, index=False, float_format='%.4f') # dane tylko wstępnie obrobione
                     csv_files.append(output_file)
                     csv_files_raw.append(output_file_raw)
-                    print(f"[{tribometer_type}][{mode}] średnia dla µ: {best_sample_average_µ}, plik: {filename}\n")
+                    mean_u = display_average(approximated_data, 'µ')
+                    print(f"[{tribometer_type}][{mode}] średnia dla µ: {mean_u:.4f}, plik: {filename}\n")
                 except Exception as e:
                     print(f"\033[91mBłąd podczas zapisywania pliku {output_file}: {e} \033[0m")
                 
