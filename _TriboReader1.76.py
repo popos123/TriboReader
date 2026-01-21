@@ -3,8 +3,10 @@ import re
 import os
 import sys
 import time
+import shutil
 import ctypes
 import msvcrt
+import traceback
 import configparser
 # Importy modułów zewnętrznych
 import pandas as pd
@@ -106,21 +108,6 @@ def Savitzky(averaged_data, column_name, default_window_length):
 
     return averaged_data
 
-# Funkcja oblicza Srednią dla danej kolumny danych
-def display_average(df, column_name):
-    """
-    Funkcja oblicza i wyświetla średnią wartość z podanej kolumny DataFrame.
-
-    :param df: DataFrame, z którego będą brane dane
-    :param nazwa_kolumny: Nazwa kolumny, z której ma być obliczana średnia
-    """
-    if column_name in df.columns:
-        column_mean = df[column_name].mean()
-        return column_mean
-    else:
-        print(f"Kolumna '{column_name}' nie istnieje w DataFrame.")
-        return 0
-
 # Funkcja konwertuje przebieg 'µ' z pseudo-sinusoidalnego / prostokątnego na liniowy
 # Za pomocą 'Linear Position [mm]' wyznacza odcinki ruchu posuwisto-zwrotnego (linear) [opcjonalnie]
 # Tam gdzie była zmiana kierunku zmienia znak i usuwa próbki gdzie ruch ustał lub rósł dopiero
@@ -132,7 +119,7 @@ def linear_mode_u_preprocessing(df):
     # Sprawdzenie obecności kolumny 'Linear Position [mm]'
     support_column = 'Linear Position [mm]'
     # String START
-    lm_warning = "UWAGA! Za mało próbek do ładnego wygładzenia - tylko ABS(), za szybko? za mały promień? za krótko?"
+    lm_warning = "\033[38;5;214mUWAGA! Pomijam wygładzanie dla 'µ' - tylko abs()\033[0m"
     lm_count = "Ilość zmian znaku:"
     lm_cut = "Liczba wyciętych próbek:"
     lm_per_sample = "próbek na zmianę znaku:"
@@ -156,7 +143,16 @@ def linear_mode_u_preprocessing(df):
                         break
                 if sign_change_found:
                     changes_µ.append((idx, rows_after_linear_change))
-        if (round(len(df)/len(changes_µ)) < 3) or (round(len(df)/changes_linear.iloc[-1]) < 3):
+        # SAFE: avoid division by zero
+        denom1 = len(changes_µ)
+        denom2 = changes_linear.iloc[-1] if len(changes_linear) > 0 else 0
+        cond_safety = False
+        if denom1 == 0 or denom2 == 0:
+            cond_safety = True
+        else:
+            if (round(len(df)/denom1) < 3) or (round(len(df)/denom2) < 3):
+                cond_safety = True
+        if cond_safety:
             df['µ'] = df['µ'].abs() # ABS wartości w kolumnie 'µ'
             print(lm_warning)
         else:
@@ -176,7 +172,14 @@ def linear_mode_u_preprocessing(df):
     else:
         # Brak 'Linear Position [mm]' - obliczanie zmian znaku w 'µ'
         changes_µ = changes_linear = (df['µ'].shift() * df['µ'] < 0).cumsum()
-        if (round(len(df)/changes_µ.iloc[-1]) < 3):
+        denom = changes_µ.iloc[-1] if len(changes_µ) > 0 else 0
+        cond_safety = False
+        if denom == 0:
+            cond_safety = True
+        else:
+            if (round(len(df)/denom) < 3):
+                cond_safety = True
+        if cond_safety:
             df['µ'] = df['µ'].abs() # ABS wartości w kolumnie 'µ'
             print(lm_warning)
         else:
@@ -187,7 +190,21 @@ def linear_mode_u_preprocessing(df):
                 end_idx = min(len(df) - 1, change_idx + num_samples)
                 df.loc[start_idx:end_idx, 'µ'] = None
                 max_rows_to_cut += (end_idx - start_idx + 1)
-    if not ((round(len(df) / changes_linear.iloc[-1]) < 3) if support_column in df.columns else (round(len(df) / changes_µ.iloc[-1]) < 3)):
+    # Naprawa drugiego warunku warunkując wyliczenie w całości oraz test na 0
+    check_condition = False
+    if support_column in df.columns:
+        denom = changes_linear.iloc[-1] if len(changes_linear) > 0 else 0
+        if denom == 0:
+            check_condition = False
+        else:
+            check_condition = not (round(len(df) / denom) < 3)
+    else:
+        denom = changes_µ.iloc[-1] if len(changes_µ) > 0 else 0
+        if denom == 0:
+            check_condition = False
+        else:
+            check_condition = not (round(len(df) / denom) < 3)
+    if check_condition:
         # ABS wartości w kolumnie 'µ'
         df['µ'] = df['µ'].abs()
         # Aproksymacja liniowa z użyciem średnich próbek przed i po
@@ -210,11 +227,11 @@ def linear_mode_u_preprocessing(df):
     if max_rows_to_cut > 0:
         if support_column in df.columns:
             print(f"{lm_count} {len(changes_µ)}, {changes_linear.iloc[-1]}")
-            if (round(len(df)/len(changes_µ)) > 3):
+            if len(changes_µ) != 0 and (round(len(df)/len(changes_µ)) > 3):
                 print(f"{lm_cut} {max_rows_to_cut}, {lm_per_sample} {round(max_rows_to_cut/len(changes_µ))}")
         else:
             print(f"{lm_count} {changes_µ.iloc[-1]}")
-            if (round(len(df)/changes_µ.iloc[-1]) > 3):
+            if changes_µ.iloc[-1] != 0 and (round(len(df)/changes_µ.iloc[-1]) > 3):
                 print(f"{lm_cut} {max_rows_to_cut}, {lm_per_sample} {round(max_rows_to_cut/changes_µ.iloc[-1])}")
 
     return df
@@ -430,7 +447,7 @@ def T11_calculations(df, file_name):
             print(f"[T11] Odczytana prędkość liniowa: {s} m/s")
         else:
             # TODO Podanie ręcznie jak nie odczyta z nazwy pliku
-            raise ValueError("Brak odpowiedniej wartości m/s w nazwie pliku, np. 0.1m-s [zastosowano domyślnie 0.1m/s]")
+            print("\033[31mBrak odpowiedniej wartości m/s w nazwie pliku, np. 0.1m-s [zastosowano domyślnie 0.1m/s]\033[0m")
         # Obliczanie całkowitej przebytej drogi (m) przy stałej prędkości z każdej chwili czasowej
         df['Distance [m]'] = s * df['Time [s]']
     except Exception as e:
@@ -445,7 +462,7 @@ def T11_calculations(df, file_name):
             print(f"[T11] Odczytana wartość obciążenia: {F} N")
         else:
             # TODO Podanie ręcznie jak nie odczyta z nazwy pliku
-            raise ValueError("Brak odpowiedniej wartości F w nazwie pliku, np. 10N [zastosowano domyślnie 10N]")
+            print("\033[31mBrak odpowiedniej wartości F w nazwie pliku, np. 10N [zastosowano domyślnie 10N]\033[0m")
         # Obliczanie µ = N/F, gdzie N to "Friction force [N]", F odczytane z pliku
         df["µ"] = df["Friction force [N]"].apply(lambda N: N / F if N != 0 else 0)
     except Exception as e:
@@ -468,7 +485,7 @@ def Rtec_calculations(df, file_name):
             print(f"[Rtec] Odczytana prędkość liniowa: {s} m/s")
         else:
             # TODO Podanie ręcznie jak nie odczyta z nazwy pliku
-            raise ValueError("Brak odpowiedniej wartości m/s w nazwie pliku, np. 0.1m-s [zastosowano domyślnie 0.1m/s]")
+            print("\033[31mBrak odpowiedniej wartości m/s w nazwie pliku, np. 0.1m-s [zastosowano domyślnie 0.1m/s]\033[0m")
         # Obliczanie całkowitej przebytej drogi (m) przy stałej prędkości z każdej chwili czasowej
         df['Distance [m]'] = s * df[' Timestamp']
     except Exception as e:
@@ -631,6 +648,8 @@ def read_and_process_file(file_path):
 
         # Stwórz DataFrame
         df = pd.DataFrame(data, columns=header)
+        # PRINT ILE LINII
+        #print(f"[DEBUG] Wczytano: {len(df)} linii danych")
 
         # Sprawdź, czy plik zawiera kolumnę "Linear Position [mm]" jak tak to ruch Posuwisto-Zwrotny
         if mode == modes[0]:  # "Linear"
@@ -644,6 +663,7 @@ def read_and_process_file(file_path):
                 # Usuń powtarzające się te same liczby, więcej niż 10% zbioru danych (FIX)
                 df['µ'] = replace_repeated_values(df['µ'])
                 # Konwersja przebiegu 'µ' z pseudo-sinusoidalnego / prostokątnego na liniowy
+                #print(f"[DEBUG] print pierwszych 10 wierszy df: {df.head(10)}")
                 df = linear_mode_u_preprocessing(df)
                 # Usunięcie peaków za pomocą odchylenia standardowego razy 2
                 df['µ'] = remove_peaks_auto_limit(df['µ'], std_multiplier=2)
@@ -723,7 +743,8 @@ def read_and_process_file(file_path):
         return df, tribometer_type, mode
 
     except Exception as e:
-        print(f"\033[91m Błąd podczas przetwarzania pliku: {file_path}: {e} \033[0m")
+        last_lineno = traceback.extract_tb(sys.exc_info()[2])[-1].lineno
+        print(f"\033[91m Błąd podczas przetwarzania pliku: {file_path}:\n{e} (linia {last_lineno}) \033[0m")
         return None, None, None
 
 # Funkcja oblicza najlepszą wartość ilości uśredniania próbek dla przebiegu µ i pd
@@ -855,7 +876,9 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
             # dodanie peaku jako inwersja i offset na początku danych
             consecutive_zero_min_index = 0  # Licznik wystąpień min_index = 0
             # Pętla while jest po to aby kod wykonać do puki nie wygładzi się przebiegów pseudo-sinusoidalnych
-            while consecutive_zero_min_index < 3:  # Warunek zakończenia pętli - POTRÓJNY check, jeśli indeks się trzy razy nie zmieni to break
+            max_iterations = 50  # Limit maksymalnej liczby iteracji, aby zapobiec nieskończonej pętli
+            iteration = 0
+            while consecutive_zero_min_index < 3 and iteration < max_iterations:  # Warunek zakończenia pętli - POTRÓJNY check lub limit iteracji
                 min_value = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość w kolumnie
                 min_index = df['Penetration Depth [µm]'].idxmin()  # Znajdź indeks najmniejszej wartości
                 end_index = df[df['Penetration Depth [µm]'] == min_value].index  # Ustal indeks najmniejszej wartości
@@ -868,6 +891,7 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
                     consecutive_zero_min_index += 1  # Zwiększ licznik
                 else:
                     consecutive_zero_min_index = 0  # Zresetuj licznik, jeśli min_index nie jest równy 0
+                iteration += 1
 
         # Drugi raz offset wartości ujemnych (na wszelki wypadek) względem danych uśrednionych
         min_penetration_depth_4 = df['Penetration Depth [µm]'].min()  # Znajdź najmniejszą wartość
@@ -917,10 +941,15 @@ def process_penetration_depth(df, data, percent, offset_raw, erase_peak, invert_
 
 # Funkcja uśrednia RAW Data według zmiennej best_sample_average i stasuje filtr Savitzky-Golay
 def adjust_and_average_data(df, best_sample_average, window_u, window_pd):
+    # Sprawdzenie czy best_sample_average jest None lub niepoprawnego typu, lub <= 0
+    if best_sample_average is None or not isinstance(best_sample_average, int) or best_sample_average <= 0:
+        print("\033[93m[WARNING] Nieprawidłowa wartość best_sample_average ("f"{best_sample_average}), ustawiono na 1!\033[0m")
+        best_sample_average = 1
+
     # Zainicjuj pustą listę na uśrednione dane
     averaged_data_list = []
 
-    # Iteruj po zakresach danych co `sample_average` wierszy
+    # Iteruj po zakresach danych co `best_sample_average` wierszy
     for i in range(0, len(df), best_sample_average):
         # Wybierz podzbiór danych dla danego zakresu
         subset = df.iloc[i:i+best_sample_average]
@@ -1060,7 +1089,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                 worksheet.write(1, col_offset + 1, series_name)
 
             # Ustal maksymalną wartość dla osi X
-            x_axis_max = int(round(df['Distance [m]'].max()))
+            x_axis_max = max(1, int(round(df['Distance [m]'].max())))
             x_axis_max = (int((x_axis_max + 24) / 25)) * 25
 
             # Dodaj wykres µ
@@ -1101,7 +1130,7 @@ def generate_combined_xlsx(csv_files, output_xlsx, series_from_filename, chart_l
                 chart_pd.set_x_axis({
                     'name': x_axis_label,  # nazwa osi X zależna od języka
                     'min': 0,  # minimalna wartość osi X
-                    'max': 100 if x_axis_max < 10 else x_axis_max,  # zakres
+                    'max': max(25, x_axis_max),  # zakres
                     'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,  # podziałka
                     'major_gridlines': {'visible': True},  # dodaj pionowe kreski
                 })
@@ -1167,7 +1196,7 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
                     worksheet.write(1, col_offset + 2, series_name)
 
             # Maksymalna wartość dla osi X
-            x_axis_max = int(round(df['Distance [m]'].max()))
+            x_axis_max = max(1, int(round(df['Distance [m]'].max())))
             x_axis_max = (int((x_axis_max + 24) / 25)) * 25
 
             # Dodaj wykres µ
@@ -1194,7 +1223,7 @@ def generate_combined_xlsx_2(csv_files=None, csv_files_raw=None, output_xlsx="de
             chart.set_x_axis({
                 'name': x_axis_label,
                 'min': 0,
-                'max': 100 if x_axis_max < 10 else x_axis_max,
+                'max': max(25, x_axis_max),
                 'major_unit': max(25, int(round(x_axis_max / 5.0))) if x_axis_max >= 10 else 2,
                 'major_gridlines': {'visible': True},
             })
@@ -1252,6 +1281,30 @@ def main():
     print("Pliki te powinny mieć w nazwie nawias () a w nim nazwę serii")
     print("Pliki z Rtec powinny mieć w nazwie prędkość liniową np. 0.1m-s a dla T11 dodatkowo obciążenie np. 10N\n")
     folder_path = '.'
+
+    # Przygotuj folder tymczasowy na pliki do usunięcia
+    temp_folder_base = "_temp"
+    temp_folder = temp_folder_base
+    counter = 1
+    while True:
+        if not os.path.exists(temp_folder):
+            try:
+                os.makedirs(temp_folder)
+                print(f"Stworzono folder tymczasowy: {temp_folder}")
+                break
+            except Exception as e:
+                print(f"\033[91mNie udało się utworzyć folderu {temp_folder}: {e}\033[0m")
+                temp_folder = f"{temp_folder_base}_{counter}"
+                counter += 1
+        else:
+            # Folder istnieje, sprawdź czy jest pusty
+            if not os.listdir(temp_folder):
+                print(f"Użycie istniejącego pustego folderu tymczasowego: {temp_folder}")
+                break
+            else:
+                temp_folder = f"{temp_folder_base}_{counter}"
+                counter += 1
+
     csv_files = []
     csv_files_raw = []
     config_path = "config.ini"
@@ -1270,40 +1323,62 @@ def main():
         chart_lang = config['chart_lang']
     else:
         min_sample, max_sample, default_window_length_u, default_window_length_pd, title_from_text, offset_raw, erase_peak, invert_peak, chart_lang = ask_user_for_variables() # Wczytaj dane od użytkownika
-    for filename in os.listdir(folder_path):
-        if filename.endswith(".txt") or filename.endswith(".csv"):
-            file_path = os.path.join(folder_path, filename)
-            data, tribometer_type, mode = read_and_process_file(file_path) # Wczytaj dane z plików
-            if data is not None:
-                # Przetwórz dane przy użyciu najlepszej wartości sample_average (do wyboru µ lub pd)
-                best_sample_average_µ, best_sample_average_pd = find_optimal_samples_average(data, column_names=['Distance [m]', 'µ', 'Penetration Depth [µm]'], min_sample=min_sample, max_sample=max_sample)
-                averaged_data = adjust_and_average_data(data, best_sample_average_µ, default_window_length_u, default_window_length_pd)
-                
-                # Korekta zużycia liniowego
-                averaged_data = process_penetration_depth(averaged_data, data, 0.05, offset_raw, erase_peak, invert_peak) # df=averaged_data, data=data, percent=0.1, offset_raw=0, erase_peak=0, invert_peak=1
 
-                # Approximate the last value
-                approximated_data = approximate_last_measurement(averaged_data, data)
+    # Nowe zmienne do numerowania i śledzenia postępu
+    files_to_process = [f for f in os.listdir(folder_path) if f.endswith(".txt") or f.endswith(".csv")]
+    total_files = len(files_to_process)
+    processed_files = 0
+    success_files = 0
 
-                # Nazwa plików CSV odpowiadających nazwie pliku tekstowego oryginalnego + spacja
-                output_file = os.path.splitext(filename)[0] + ' .csv'
-                output_file_raw = "raw_" + output_file # to samo co wyżej, ale z przedrostkiem "raw_"
-                
-                if "Nano" in tribometer_type: # "Nano" - usuń kolumnę pd dla nano tribometru
-                    approximated_data = approximated_data.drop(columns=['Penetration Depth [µm]']) # z obrobionych
-                    data = data.drop(columns=['Penetration Depth [µm]']) # z raw
+    for idx, filename in enumerate(files_to_process, start=1):
+        file_path = os.path.join(folder_path, filename)
+        print(f"\n[{idx}/{total_files}] Plik: {filename} ...")
+        data, tribometer_type, mode = read_and_process_file(file_path) # Wczytaj dane z plików
+        # print(f"[1/5] done reading file")
+        processed_files += 1
+        if data is not None:
+            # Przetwórz dane przy użyciu najlepszej wartości sample_average (do wyboru µ lub pd)
+            best_sample_average_µ, best_sample_average_pd = find_optimal_samples_average(data, column_names=['Distance [m]', 'µ', 'Penetration Depth [µm]'], min_sample=min_sample, max_sample=max_sample)
+            # print(f"[2/5] done finding optimal samples average")
+            averaged_data = adjust_and_average_data(data, best_sample_average_µ, default_window_length_u, default_window_length_pd)
+            # print(f"[3/5] done adjusting and averaging data")
+            # Korekta zużycia liniowego (df=averaged_data, data=data, percent=0.05, offset_raw=0, erase_peak=0, invert_peak=1)
+            averaged_data = process_penetration_depth(averaged_data, data, 0.05, offset_raw, erase_peak, invert_peak)
+            # print(f"[4/5] done processing penetration depth")
+            # Approximate the last value
+            approximated_data = approximate_last_measurement(averaged_data, data)
+            # print(f"[5/5] done approximating last measurement")
+            # Nazwa plików CSV odpowiadających nazwie pliku tekstowego oryginalnego + spacja
+            output_file = os.path.splitext(filename)[0] + ' .csv'
+            output_file_raw = "raw_" + output_file # to samo co wyżej, ale z przedrostkiem "raw_"
 
-                # Zapisz wynik do pliku CSV
-                try:
-                    approximated_data.to_csv(output_file, index=False, float_format='%.4f') # finalne dane wyjściowe
-                    data.to_csv(output_file_raw, index=False, float_format='%.4f') # dane tylko wstępnie obrobione
-                    csv_files.append(output_file)
-                    csv_files_raw.append(output_file_raw)
-                    mean_u = display_average(approximated_data, 'µ')
-                    print(f"[{tribometer_type}][{mode}] średnia dla µ: {mean_u:.4f}, plik: {filename}\n")
-                except Exception as e:
-                    print(f"\033[91mBłąd podczas zapisywania pliku {output_file}: {e} \033[0m")
-                
+            # Umieść pliki wynikowe w katalogu tymczasowym
+            temp_output_file = os.path.join(temp_folder, output_file)
+            temp_output_file_raw = os.path.join(temp_folder, output_file_raw)
+            
+            if "Nano" in tribometer_type: # "Nano" - usuń kolumnę pd dla nano tribometru
+                approximated_data = approximated_data.drop(columns=['Penetration Depth [µm]']) # z obrobionych
+                data = data.drop(columns=['Penetration Depth [µm]']) # z raw
+
+            # Zapisz wynik do pliku CSV w temp_folder
+            try:
+                approximated_data.to_csv(temp_output_file, index=False, float_format='%.4f') # finalne dane wyjściowe
+                data.to_csv(temp_output_file_raw, index=False, float_format='%.4f') # dane tylko wstępnie obrobione
+                csv_files.append(temp_output_file)
+                csv_files_raw.append(temp_output_file_raw)
+                success_files += 1
+
+                # Calculate and print the mean value for µ data column
+                if "µ" in approximated_data.columns:
+                    mu_mean = approximated_data["µ"].mean()
+                else:
+                    mu_mean = float('nan')
+                print(f"[{tribometer_type}][{mode}] Wartość średnia dla 'µ': {mu_mean:.3f}")
+            except Exception as e:
+                print(f"\033[91mBłąd podczas zapisywania pliku {output_file}: {e} \033[0m")
+        else:
+            print(f"\033[91m[{idx}/{total_files}] Plik: {filename} NIE ZOSTAŁ POPRAWNIE PRZETWORZONY\033[0m")
+            
     # Generowanie pliku xlsx ze wszystkimi danymi
     status = 0
     if csv_files or csv_files_raw: print("Generowanie pliku Excelowskiego ...")
@@ -1321,18 +1396,7 @@ def main():
             except Exception as e:
                 status = 0
                 print(f"\033[91mBłąd podczas zapisywania pliku combined_data_all.xlsx: {e} \033[0m")
-        for file in csv_files:
-            if os.path.exists(file):
-                os.remove(file)
-        # Sprawdź, czy wszystkie pliki zostały usunięte
-        all_removed = True
-        for file in csv_files:
-            if os.path.exists(file):
-                all_removed = False
-                print(f"\033[38;5;214m Plik {file} nadal istnieje. \033[0m")
-        if all_removed:
-            print("Wszystkie pliki zostały usunięte.")
-        # Generowanie pliku xlsx ze wszystkimi danymi
+
     if csv_files_raw:
         try:
             generate_combined_xlsx(csv_files_raw, "combined_data_raw.xlsx", title_from_text, chart_lang)
@@ -1340,18 +1404,18 @@ def main():
         except Exception as e:
             status = 0
             print(f"\033[91mBłąd podczas zapisywania pliku combined_data_raw.xlsx: {e} \033[0m")
-        for file in csv_files_raw:
-            if os.path.exists(file):
-                os.remove(file)
-        # Sprawdź, czy wszystkie pliki zostały usunięte
-        all_removed = True
-        for file in csv_files_raw:
-            if os.path.exists(file):
-                all_removed = False
-                print(f"\033[38;5;214mPlik {file} nadal istnieje. \033[0m")
-        if all_removed:
-            print("Wszystkie pliki raw zostały usunięte.")
-    if status == 1: print("\033[92mWszystkie dane z WCZYTANYCH plików zostały zapisane poprawnie \033[0m")
+
+    # Usuwanie całego folderu tymczasowego razem ze wszystkimi plikami w środku
+    try:
+        if os.path.exists(temp_folder):
+            shutil.rmtree(temp_folder)
+            print(f"Wszystkie pliki tymczasowe oraz folder {temp_folder} zostały usunięte.")
+    except Exception as e:
+        print(f"\033[91mBłąd podczas usuwania folderu tymczasowego {temp_folder}: {e}\033[0m")
+
+    print(f"POPRAWNIE przetworzono {success_files} z {total_files} plików.")
+
+    if status == 1: print(f"\033[92mWszystkie dane z WCZYTANYCH {success_files} z {total_files} plików zostały zapisane poprawnie \033[0m")
     else: print("\033[91mNie wszystkie dane zostały zapisane poprawnie z powodu powyższych błędów \033[0m")
 
     # Odliczanie do zamknięcia konsoli
