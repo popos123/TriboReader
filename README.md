@@ -12,8 +12,8 @@ How to compile to .exe:<br>
 To compile a .py file to .exe, only You need to do a four steps:<br>
 1. Install python 3 from Microsoft Store or from https://www.python.org/downloads/<br>
 2. In the Terminal: <code>pip install pandas xlsxwriter scipy pyinstaller</code><br>
-3. Next command: <code>curl -O https://raw.githubusercontent.com/popos123/TriboReader/refs/heads/main/_TriboReader1.75.py</code><br>
-4. Final compilation: <code>pyinstaller --onefile _TriboReader1.75.py</code><br>
+3. Next command: <code>curl -O https://raw.githubusercontent.com/popos123/TriboReader/refs/heads/main/_TriboReader1.76.py</code><br>
+4. Final compilation: <code>pyinstaller --onefile _TriboReader1.76.py</code><br>
 <br>
 How to compile to .deb:<br>
 By using stdeb, tutorial: https://www.youtube.com/watch?v=nEg9VLK47xQ<br>
